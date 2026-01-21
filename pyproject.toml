@@ -1,0 +1,28 @@
+[project]
+name = "ai-image-generator"
+version = "0.1.0"
+description = "GTK 4 AI Image Generator with Stable Diffusion and multi-GPU support"
+requires-python = ">=3.12"
+dependencies = [
+    "PyGObject>=3.46.0",
+    "pycairo>=1.24.0",
+    "Pillow>=10.0.0",
+    "PyYAML>=6.0",
+    "torch>=2.1.0",
+    "diffusers>=0.27.0",
+    "transformers>=4.38.0",
+    "accelerate>=0.27.0",
+    "safetensors>=0.4.0",
+    "nvidia-ml-py>=11.5.0",
+]
+
+[project.scripts]
+ai-image-generator = "main:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

@@ -1,0 +1,195 @@
+/* AI Image Generator - GTK 4 Styles */
+
+/* Main window */
+window {
+    background-color: @theme_bg_color;
+}
+
+/* Prompt entry styles */
+.prompt-positive {
+    border: 2px solid #4CAF50;
+    border-radius: 4px;
+    padding: 4px;
+}
+
+.prompt-positive:focus-within {
+    border-color: #66BB6A;
+    box-shadow: 0 0 4px rgba(76, 175, 80, 0.5);
+}
+
+.prompt-negative {
+    border: 2px solid #F44336;
+    border-radius: 4px;
+    padding: 4px;
+}
+
+.prompt-negative:focus-within {
+    border-color: #EF5350;
+    box-shadow: 0 0 4px rgba(244, 67, 54, 0.5);
+}
+
+/* Prompt labels */
+.prompt-label-positive {
+    color: #4CAF50;
+    font-weight: bold;
+}
+
+.prompt-label-negative {
+    color: #F44336;
+    font-weight: bold;
+}
+
+/* VRAM display */
+.vram-bar {
+    min-height: 20px;
+    border-radius: 4px;
+}
+
+.vram-bar trough {
+    background-color: #424242;
+    border-radius: 4px;
+}
+
+.vram-bar progress {
+    border-radius: 4px;
+}
+
+.vram-low progress {
+    background-color: #4CAF50;
+}
+
+.vram-medium progress {
+    background-color: #FF9800;
+}
+
+.vram-high progress {
+    background-color: #F44336;
+}
+
+.vram-label {
+    font-size: 0.9em;
+    color: @theme_fg_color;
+}
+
+/* Panel styles */
+.left-panel {
+    padding: 12px;
+    border-right: 1px solid @borders;
+}
+
+.center-panel {
+    padding: 12px;
+}
+
+.right-panel {
+    padding: 12px;
+    border-left: 1px solid @borders;
+}
+
+/* Section headers */
+.section-header {
+    font-weight: bold;
+    margin-top: 12px;
+    margin-bottom: 6px;
+}
+
+/* Toolbar */
+.toolbar {
+    padding: 6px 12px;
+    border-bottom: 1px solid @borders;
+}
+
+.toolbar button {
+    margin-right: 6px;
+}
+
+/* Model selector */
+.model-selector {
+    margin-bottom: 8px;
+}
+
+.model-selector label {
+    margin-bottom: 4px;
+}
+
+/* Generation parameters */
+.param-row {
+    margin-bottom: 6px;
+}
+
+.param-label {
+    min-width: 80px;
+}
+
+/* Thumbnail gallery */
+.thumbnail-gallery {
+    padding: 6px;
+}
+
+.thumbnail {
+    margin: 4px;
+    border: 2px solid transparent;
+    border-radius: 4px;
+}
+
+.thumbnail:hover {
+    border-color: @theme_selected_bg_color;
+}
+
+.thumbnail-selected {
+    border-color: @theme_selected_bg_color;
+}
+
+/* Image display */
+.image-display {
+    background-color: #1a1a1a;
+    border-radius: 4px;
+}
+
+/* Setup screen */
+.setup-screen {
+    padding: 24px;
+}
+
+.setup-title {
+    font-size: 1.5em;
+    font-weight: bold;
+    margin-bottom: 24px;
+}
+
+.setup-section {
+    margin-bottom: 24px;
+}
+
+.setup-section-title {
+    font-weight: bold;
+    margin-bottom: 12px;
+}
+
+/* GPU selection */
+.gpu-checkbox {
+    margin: 4px 0;
+}
+
+/* Status bar */
+.status-bar {
+    padding: 4px 12px;
+    border-top: 1px solid @borders;
+    font-size: 0.9em;
+}
+
+/* Progress indicator */
+.generation-progress {
+    margin: 8px 0;
+}
+
+/* Error messages */
+.error-message {
+    color: #F44336;
+    font-weight: bold;
+}
+
+/* Success messages */
+.success-message {
+    color: #4CAF50;
+}
