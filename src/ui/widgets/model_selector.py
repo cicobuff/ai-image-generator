@@ -36,11 +36,23 @@ class ModelSelector(Gtk.Box):
         label.set_halign(Gtk.Align.START)
         self.append(label)
 
+        # Dropdown row with refresh button
+        dropdown_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self.append(dropdown_row)
+
         # Dropdown
         self._dropdown = Gtk.DropDown()
         self._dropdown.set_hexpand(True)
         self._dropdown.connect("notify::selected", self._on_selection_changed)
-        self.append(self._dropdown)
+        dropdown_row.append(self._dropdown)
+
+        # Refresh button
+        self._refresh_button = Gtk.Button()
+        self._refresh_button.set_icon_name("view-refresh-symbolic")
+        self._refresh_button.set_tooltip_text("Refresh model list")
+        self._refresh_button.add_css_class("flat")
+        self._refresh_button.connect("clicked", self._on_refresh_clicked)
+        dropdown_row.append(self._refresh_button)
 
         # Initialize with empty model
         self._update_model_list()
@@ -117,3 +129,23 @@ class ModelSelector(Gtk.Box):
     def refresh(self):
         """Refresh the model list."""
         self._update_model_list()
+
+    def _on_refresh_clicked(self, button: Gtk.Button):
+        """Handle refresh button click - rescan models."""
+        import threading
+        from gi.repository import GLib
+
+        # Disable button during scan
+        button.set_sensitive(False)
+
+        def scan_thread():
+            model_manager.scan_models()
+            GLib.idle_add(self._on_scan_complete)
+
+        def restore_button():
+            button.set_sensitive(True)
+
+        self._on_scan_complete = restore_button
+
+        thread = threading.Thread(target=scan_thread, daemon=True)
+        thread.start()

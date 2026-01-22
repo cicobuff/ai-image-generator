@@ -31,6 +31,13 @@ class GenerationMetadata:
     # Additional info
     model_type: str = ""  # sdxl, sd15, etc.
 
+    # Upscale info
+    upscale_enabled: bool = False
+    upscale_model: str = ""
+    upscale_factor: int = 4
+    original_width: int = 0  # Original size before upscaling
+    original_height: int = 0
+
     def to_json(self) -> str:
         """Convert metadata to JSON string."""
         return json.dumps(asdict(self), indent=2)
@@ -56,14 +63,21 @@ class GenerationMetadata:
 
     def _to_readable_string(self) -> str:
         """Create human-readable parameter string (compatible with other tools)."""
+        # Use original size if upscaled, otherwise current size
+        display_width = self.original_width if self.original_width > 0 else self.width
+        display_height = self.original_height if self.original_height > 0 else self.height
+
         parts = [
             self.prompt,
             f"Negative prompt: {self.negative_prompt}" if self.negative_prompt else "",
-            f"Steps: {self.steps}, Sampler: {self.sampler}, CFG scale: {self.cfg_scale}, Seed: {self.seed}, Size: {self.width}x{self.height}",
+            f"Steps: {self.steps}, Sampler: {self.sampler}, CFG scale: {self.cfg_scale}, Seed: {self.seed}, Size: {display_width}x{display_height}",
             f"Model: {self.checkpoint}",
         ]
         if self.vae:
             parts.append(f"VAE: {self.vae}")
+        if self.upscale_enabled and self.upscale_model:
+            parts.append(f"Upscale: {self.upscale_model} ({self.upscale_factor}x)")
+            parts.append(f"Final size: {self.width}x{self.height}")
         return "\n".join(p for p in parts if p)
 
 

@@ -17,6 +17,7 @@ from src.ui.widgets.prompt_entry import PromptPanel
 from src.ui.widgets.image_display import ImageDisplayFrame
 from src.ui.widgets.thumbnail_gallery import ThumbnailGallery
 from src.ui.widgets.toolbar import Toolbar
+from src.ui.widgets.upscale_settings import UpscaleSettingsWidget
 from src.utils.metadata import load_metadata_from_image
 
 
@@ -143,6 +144,16 @@ class WorkScreen(Gtk.Box):
         self._params_widget = GenerationParamsWidget()
         box.append(self._params_widget)
 
+        # Separator
+        separator3 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        separator3.set_margin_top(8)
+        separator3.set_margin_bottom(8)
+        box.append(separator3)
+
+        # Upscale settings
+        self._upscale_widget = UpscaleSettingsWidget()
+        box.append(self._upscale_widget)
+
         return scrolled
 
     def _create_center_panel(self) -> Gtk.Widget:
@@ -265,7 +276,17 @@ class WorkScreen(Gtk.Box):
         # Store whether user wanted random seed
         self._last_seed_was_random = (params.seed == -1)
 
-        generation_service.generate(params)
+        # Get upscale settings
+        upscale_enabled = self._upscale_widget.is_enabled
+        upscale_model_path = self._upscale_widget.selected_model_path
+        upscale_model_name = self._upscale_widget.selected_model_name
+
+        generation_service.generate(
+            params,
+            upscale_enabled=upscale_enabled,
+            upscale_model_path=upscale_model_path,
+            upscale_model_name=upscale_model_name,
+        )
 
     def _on_cancel(self):
         """Handle Cancel button click."""
@@ -339,8 +360,14 @@ class WorkScreen(Gtk.Box):
             if metadata.clip:
                 self._clip_selector.set_selected_by_name(metadata.clip)
 
+            # Restore upscale settings
+            self._upscale_widget.set_enabled(metadata.upscale_enabled)
+            if metadata.upscale_model:
+                self._upscale_widget.set_model_by_name(metadata.upscale_model)
+
             self._status_bar.set_text(f"Loaded: {path.name} (parameters restored)")
         else:
             # No metadata - reset to defaults
             self._params_widget.reset_to_defaults()
+            self._upscale_widget.reset_to_defaults()
             self._status_bar.set_text(f"Loaded: {path.name} (no metadata - using defaults)")

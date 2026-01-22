@@ -15,6 +15,7 @@ class ModelType(Enum):
     CHECKPOINT = "checkpoint"
     VAE = "vae"
     CLIP = "clip"
+    UPSCALE = "upscale"
 
 
 @dataclass
@@ -77,6 +78,7 @@ class ModelManager:
         self._checkpoints: list[ModelInfo] = []
         self._vaes: list[ModelInfo] = []
         self._clips: list[ModelInfo] = []
+        self._upscalers: list[ModelInfo] = []
         self._loaded = LoadedModels()
         self._on_models_changed: list[Callable[[], None]] = []
 
@@ -94,6 +96,11 @@ class ModelManager:
     def clips(self) -> list[ModelInfo]:
         """Get list of available CLIP models."""
         return self._clips
+
+    @property
+    def upscalers(self) -> list[ModelInfo]:
+        """Get list of available upscale models."""
+        return self._upscalers
 
     @property
     def loaded(self) -> LoadedModels:
@@ -129,6 +136,7 @@ class ModelManager:
         self._checkpoints.clear()
         self._vaes.clear()
         self._clips.clear()
+        self._upscalers.clear()
 
         if not models_path.exists():
             if progress_callback:
@@ -136,10 +144,13 @@ class ModelManager:
             self._notify_models_changed()
             return
 
-        # Scan for all model files
+        # Scan for all model files (excluding upscale directory for now)
         model_files = []
         for ext in MODEL_EXTENSIONS:
-            model_files.extend(models_path.rglob(f"*{ext}"))
+            for path in models_path.rglob(f"*{ext}"):
+                # Skip upscale directory for main models
+                if "upscale" not in str(path.parent).lower():
+                    model_files.append(path)
 
         total = len(model_files)
         for i, path in enumerate(model_files):
@@ -150,18 +161,48 @@ class ModelManager:
             if model_info:
                 self._categorize_model(model_info)
 
+        # Scan upscale directory separately
+        upscale_path = models_path / "upscale"
+        if upscale_path.exists():
+            self._scan_upscale_models(upscale_path, progress_callback)
+
         # Sort models by name
         self._checkpoints.sort(key=lambda m: m.name.lower())
         self._vaes.sort(key=lambda m: m.name.lower())
         self._clips.sort(key=lambda m: m.name.lower())
+        self._upscalers.sort(key=lambda m: m.name.lower())
 
         if progress_callback:
             progress_callback(
                 f"Found {len(self._checkpoints)} checkpoints, "
-                f"{len(self._vaes)} VAEs, {len(self._clips)} CLIPs"
+                f"{len(self._vaes)} VAEs, {len(self._clips)} CLIPs, "
+                f"{len(self._upscalers)} upscalers"
             )
 
         self._notify_models_changed()
+
+    def _scan_upscale_models(self, upscale_path: Path, progress_callback: Optional[Callable[[str], None]] = None) -> None:
+        """Scan the upscale directory for upscaler models."""
+        # Upscale models can be .pth, .pt, .safetensors, .bin
+        upscale_extensions = {".pth", ".pt", ".safetensors", ".bin", ".onnx"}
+
+        for ext in upscale_extensions:
+            for path in upscale_path.rglob(f"*{ext}"):
+                if progress_callback:
+                    progress_callback(f"Scanning upscaler: {path.name}")
+
+                try:
+                    size = path.stat().st_size
+                    model_info = ModelInfo(
+                        path=path,
+                        name=path.stem,
+                        model_type=ModelType.UPSCALE,
+                        components=ModelComponents(),
+                        size_bytes=size,
+                    )
+                    self._upscalers.append(model_info)
+                except Exception as e:
+                    print(f"Error scanning upscale model {path}: {e}")
 
     def _create_model_info(self, path: Path) -> Optional[ModelInfo]:
         """Create ModelInfo for a file path."""
@@ -219,6 +260,8 @@ class ModelManager:
             self._vaes.append(model)
         elif model.model_type == ModelType.CLIP:
             self._clips.append(model)
+        elif model.model_type == ModelType.UPSCALE:
+            self._upscalers.append(model)
 
     def select_checkpoint(self, model: Optional[ModelInfo]) -> None:
         """Select a checkpoint model for loading."""
@@ -249,6 +292,13 @@ class ModelManager:
     def get_clip_by_name(self, name: str) -> Optional[ModelInfo]:
         """Find a CLIP by name."""
         for model in self._clips:
+            if model.name == name:
+                return model
+        return None
+
+    def get_upscaler_by_name(self, name: str) -> Optional[ModelInfo]:
+        """Find an upscaler by name."""
+        for model in self._upscalers:
             if model.name == name:
                 return model
         return None
