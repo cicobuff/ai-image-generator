@@ -24,6 +24,9 @@ class ImageDisplay(Gtk.DrawingArea):
 
     PAINT_RADIUS = 25  # Brush radius for paint tool
     MASK_COLOR = (144, 238, 144, 128)  # Light green with 50% transparency
+    ZOOM_STEP = 1.2  # Zoom factor per scroll step
+    MIN_ZOOM = 0.1  # Minimum zoom (10%)
+    MAX_ZOOM = 20.0  # Maximum zoom (2000%)
 
     def __init__(self):
         super().__init__()
@@ -49,9 +52,20 @@ class ImageDisplay(Gtk.DrawingArea):
         self._img_y: float = 0
         self._scale: float = 1.0
 
+        # Zoom and pan state
+        self._zoom_level: float = 1.0  # 1.0 = fit to window
+        self._pan_x: float = 0  # Pan offset in image pixels
+        self._pan_y: float = 0
+        self._is_panning: bool = False
+        self._pan_start_x: float = 0
+        self._pan_start_y: float = 0
+
         self.add_css_class("image-display")
         self.set_hexpand(True)
         self.set_vexpand(True)
+
+        # Make focusable for keyboard events
+        self.set_focusable(True)
 
         # Set draw function
         self.set_draw_func(self._on_draw)
@@ -67,6 +81,13 @@ class ImageDisplay(Gtk.DrawingArea):
         click_controller.connect("released", self._on_mouse_released)
         self.add_controller(click_controller)
 
+        # Middle-click for panning
+        pan_click_controller = Gtk.GestureClick()
+        pan_click_controller.set_button(2)  # Middle mouse button
+        pan_click_controller.connect("pressed", self._on_pan_pressed)
+        pan_click_controller.connect("released", self._on_pan_released)
+        self.add_controller(pan_click_controller)
+
         # Drag controller for continuous drawing
         drag_controller = Gtk.GestureDrag()
         drag_controller.connect("drag-begin", self._on_drag_begin)
@@ -81,14 +102,25 @@ class ImageDisplay(Gtk.DrawingArea):
         motion_controller.connect("leave", self._on_leave)
         self.add_controller(motion_controller)
 
+        # Scroll controller for zoom
+        scroll_controller = Gtk.EventControllerScroll()
+        scroll_controller.set_flags(Gtk.EventControllerScrollFlags.VERTICAL)
+        scroll_controller.connect("scroll", self._on_scroll)
+        self.add_controller(scroll_controller)
+
+        # Key controller for keyboard zoom
+        key_controller = Gtk.EventControllerKey()
+        key_controller.connect("key-pressed", self._on_key_pressed)
+        self.add_controller(key_controller)
+
     def _widget_to_image_coords(self, widget_x: float, widget_y: float) -> tuple:
         """Convert widget coordinates to image coordinates."""
         if self._pixbuf is None or self._scale == 0:
             return (-1, -1)
 
-        # Reverse the transform from _on_draw
-        img_x = (widget_x - self._img_x) / self._scale
-        img_y = (widget_y - self._img_y) / self._scale
+        # Reverse the transform from _on_draw (accounts for zoom and pan)
+        img_x = (widget_x - self._img_x) / self._scale + self._pan_x
+        img_y = (widget_y - self._img_y) / self._scale + self._pan_y
 
         img_width = self._pixbuf.get_width()
         img_height = self._pixbuf.get_height()
@@ -100,12 +132,33 @@ class ImageDisplay(Gtk.DrawingArea):
         return (int(img_x), int(img_y))
 
     def _on_motion(self, controller, x, y):
-        """Handle mouse motion for cursor updates."""
+        """Handle mouse motion for cursor updates and panning."""
+        # Handle panning with middle mouse button
+        if self._is_panning and self._pixbuf is not None:
+            # Calculate pan delta in image coordinates
+            dx = x - self._pan_start_x
+            dy = y - self._pan_start_y
+
+            # Update pan (convert screen delta to image delta)
+            self._pan_x -= dx / self._scale
+            self._pan_y -= dy / self._scale
+
+            # Clamp pan
+            self._clamp_pan()
+
+            # Update start position for next motion
+            self._pan_start_x = x
+            self._pan_start_y = y
+
+            self.queue_draw()
+
         self._current_x = x
         self._current_y = y
 
         # Update cursor based on tool
-        if self._inpaint_mode and self._current_tool != MaskTool.NONE:
+        if self._is_panning:
+            self.set_cursor(Gdk.Cursor.new_from_name("grabbing", None))
+        elif self._inpaint_mode and self._current_tool != MaskTool.NONE:
             self.set_cursor(Gdk.Cursor.new_from_name("crosshair", None))
         else:
             self.set_cursor(None)
@@ -116,6 +169,8 @@ class ImageDisplay(Gtk.DrawingArea):
 
     def _on_enter(self, controller, x, y):
         """Handle mouse enter."""
+        # Grab focus for keyboard events
+        self.grab_focus()
         self._on_motion(controller, x, y)
 
     def _on_leave(self, controller):
@@ -123,8 +178,167 @@ class ImageDisplay(Gtk.DrawingArea):
         self.set_cursor(None)
         self.queue_draw()
 
+    def _on_scroll(self, controller, dx, dy):
+        """Handle scroll for zoom."""
+        if self._pixbuf is None:
+            return False
+
+        # Get cursor position for zoom center
+        cursor_x = self._current_x
+        cursor_y = self._current_y
+
+        # Calculate zoom factor
+        if dy < 0:
+            # Scroll up = zoom in
+            factor = self.ZOOM_STEP
+        else:
+            # Scroll down = zoom out
+            factor = 1.0 / self.ZOOM_STEP
+
+        self._zoom_at_point(cursor_x, cursor_y, factor)
+        return True
+
+    def _on_key_pressed(self, controller, keyval, keycode, state):
+        """Handle keyboard shortcuts for zoom."""
+        if self._pixbuf is None:
+            return False
+
+        # Check for Ctrl modifier
+        ctrl_pressed = state & Gdk.ModifierType.CONTROL_MASK
+
+        if ctrl_pressed:
+            # Ctrl+Plus or Ctrl+Equal for zoom in
+            if keyval in (Gdk.KEY_plus, Gdk.KEY_equal, Gdk.KEY_KP_Add):
+                self._zoom_at_point(
+                    self.get_width() / 2,
+                    self.get_height() / 2,
+                    self.ZOOM_STEP
+                )
+                return True
+            # Ctrl+Minus for zoom out
+            elif keyval in (Gdk.KEY_minus, Gdk.KEY_KP_Subtract):
+                self._zoom_at_point(
+                    self.get_width() / 2,
+                    self.get_height() / 2,
+                    1.0 / self.ZOOM_STEP
+                )
+                return True
+            # Ctrl+0 for reset zoom
+            elif keyval in (Gdk.KEY_0, Gdk.KEY_KP_0):
+                self.reset_zoom()
+                return True
+
+        # Also allow 'r' or 'R' to reset zoom (no modifier needed)
+        if keyval in (Gdk.KEY_r, Gdk.KEY_R):
+            self.reset_zoom()
+            return True
+
+        # Also allow '0' without Ctrl to reset zoom
+        if keyval in (Gdk.KEY_0, Gdk.KEY_KP_0):
+            self.reset_zoom()
+            return True
+
+        return False
+
+    def _on_pan_pressed(self, gesture, n_press, x, y):
+        """Handle middle mouse button press for panning."""
+        if self._pixbuf is None:
+            return
+
+        self._is_panning = True
+        self._pan_start_x = x
+        self._pan_start_y = y
+        self.set_cursor(Gdk.Cursor.new_from_name("grabbing", None))
+
+    def _on_pan_released(self, gesture, n_press, x, y):
+        """Handle middle mouse button release."""
+        self._is_panning = False
+        self.set_cursor(None)
+
+    def _zoom_at_point(self, widget_x: float, widget_y: float, factor: float):
+        """Zoom centered on a specific point in widget coordinates."""
+        if self._pixbuf is None:
+            return
+
+        # Calculate new zoom level
+        old_zoom = self._zoom_level
+        new_zoom = old_zoom * factor
+
+        # Clamp zoom level
+        new_zoom = max(self.MIN_ZOOM, min(new_zoom, self.MAX_ZOOM))
+
+        if new_zoom == old_zoom:
+            return
+
+        # Get the point in image coordinates before zoom
+        # First, get the base scale (fit to window)
+        widget_width = self.get_width()
+        widget_height = self.get_height()
+        img_width = self._pixbuf.get_width()
+        img_height = self._pixbuf.get_height()
+
+        base_scale_x = widget_width / img_width
+        base_scale_y = widget_height / img_height
+        base_scale = min(base_scale_x, base_scale_y)
+
+        # Current effective scale
+        old_effective_scale = base_scale * old_zoom
+        new_effective_scale = base_scale * new_zoom
+
+        # Point in image coordinates (relative to pan offset)
+        # img_point = (widget_point - img_offset) / scale + pan_offset
+        old_img_x = (widget_x - self._img_x) / old_effective_scale + self._pan_x
+        old_img_y = (widget_y - self._img_y) / old_effective_scale + self._pan_y
+
+        # Update zoom
+        self._zoom_level = new_zoom
+
+        # Calculate new scaled dimensions
+        new_scaled_width = img_width * new_effective_scale
+        new_scaled_height = img_height * new_effective_scale
+
+        # Calculate new image offset (centered)
+        new_img_x = (widget_width - new_scaled_width) / 2
+        new_img_y = (widget_height - new_scaled_height) / 2
+
+        # Calculate new pan to keep the same image point under cursor
+        # widget_point = (img_point - pan_offset) * scale + img_offset
+        # => pan_offset = img_point - (widget_point - img_offset) / scale
+        self._pan_x = old_img_x - (widget_x - new_img_x) / new_effective_scale
+        self._pan_y = old_img_y - (widget_y - new_img_y) / new_effective_scale
+
+        # Clamp pan to reasonable bounds
+        self._clamp_pan()
+
+        self.queue_draw()
+
+    def _clamp_pan(self):
+        """Clamp pan values to prevent excessive panning."""
+        if self._pixbuf is None:
+            return
+
+        img_width = self._pixbuf.get_width()
+        img_height = self._pixbuf.get_height()
+
+        # Allow panning but keep at least some of the image visible
+        max_pan_x = img_width * 0.9
+        max_pan_y = img_height * 0.9
+
+        self._pan_x = max(-max_pan_x, min(self._pan_x, max_pan_x))
+        self._pan_y = max(-max_pan_y, min(self._pan_y, max_pan_y))
+
+    def reset_zoom(self):
+        """Reset zoom to fit window and center image."""
+        self._zoom_level = 1.0
+        self._pan_x = 0
+        self._pan_y = 0
+        self.queue_draw()
+
     def _on_mouse_pressed(self, gesture, n_press, x, y):
         """Handle mouse button press."""
+        # Grab focus for keyboard events
+        self.grab_focus()
+
         if not self._inpaint_mode or self._current_tool == MaskTool.NONE:
             return
 
@@ -283,13 +497,16 @@ class ImageDisplay(Gtk.DrawingArea):
             cr.show_text(text)
             return
 
-        # Calculate scaling to fit while maintaining aspect ratio
+        # Calculate base scaling to fit while maintaining aspect ratio
         img_width = self._pixbuf.get_width()
         img_height = self._pixbuf.get_height()
 
-        scale_x = width / img_width
-        scale_y = height / img_height
-        self._scale = min(scale_x, scale_y)
+        base_scale_x = width / img_width
+        base_scale_y = height / img_height
+        base_scale = min(base_scale_x, base_scale_y)
+
+        # Apply zoom level
+        self._scale = base_scale * self._zoom_level
 
         # Calculate centered position
         scaled_width = img_width * self._scale
@@ -297,10 +514,11 @@ class ImageDisplay(Gtk.DrawingArea):
         self._img_x = (width - scaled_width) / 2
         self._img_y = (height - scaled_height) / 2
 
-        # Draw the image
+        # Draw the image with pan offset
         cr.save()
         cr.translate(self._img_x, self._img_y)
         cr.scale(self._scale, self._scale)
+        cr.translate(-self._pan_x, -self._pan_y)
 
         Gdk.cairo_set_source_pixbuf(cr, self._pixbuf, 0, 0)
         cr.paint()
@@ -312,6 +530,10 @@ class ImageDisplay(Gtk.DrawingArea):
 
         cr.restore()
 
+        # Draw zoom indicator
+        if self._zoom_level != 1.0:
+            self._draw_zoom_indicator(cr, width, height)
+
         # Draw rect preview while dragging
         if self._is_drawing and self._current_tool == MaskTool.RECT:
             self._draw_rect_preview(cr)
@@ -319,6 +541,22 @@ class ImageDisplay(Gtk.DrawingArea):
         # Draw paint cursor preview
         if self._inpaint_mode and self._current_tool == MaskTool.PAINT and not self._is_drawing:
             self._draw_paint_cursor(cr)
+
+    def _draw_zoom_indicator(self, cr, width, height):
+        """Draw zoom level indicator."""
+        zoom_percent = int(self._zoom_level * 100)
+        text = f"{zoom_percent}%"
+
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.6)
+        cr.rectangle(width - 70, 10, 60, 25)
+        cr.fill()
+
+        cr.set_source_rgb(1.0, 1.0, 1.0)
+        cr.select_font_face("Sans", 0, 0)
+        cr.set_font_size(12)
+        extents = cr.text_extents(text)
+        cr.move_to(width - 40 - extents.width / 2, 27)
+        cr.show_text(text)
 
     def _draw_rect_preview(self, cr):
         """Draw rectangle preview while dragging."""
@@ -372,9 +610,11 @@ class ImageDisplay(Gtk.DrawingArea):
         if not self._inpaint_mode:
             self._mask_image = None
             self._mask_pixbuf = None
-
-        # Trigger redraw
-        self.queue_draw()
+            # Reset zoom when loading new image (not in inpaint mode)
+            self.reset_zoom()
+        else:
+            # Trigger redraw
+            self.queue_draw()
 
     def set_image_from_path(self, path: Path):
         """Set the image to display from a file path."""
@@ -384,7 +624,8 @@ class ImageDisplay(Gtk.DrawingArea):
             # Clear mask
             self._mask_image = None
             self._mask_pixbuf = None
-            self.queue_draw()
+            # Reset zoom when loading new image
+            self.reset_zoom()
         except Exception as e:
             print(f"Error loading image from {path}: {e}")
             self.clear()
@@ -396,6 +637,10 @@ class ImageDisplay(Gtk.DrawingArea):
         self._original_image = None
         self._mask_image = None
         self._mask_pixbuf = None
+        # Reset zoom
+        self._zoom_level = 1.0
+        self._pan_x = 0
+        self._pan_y = 0
         self.queue_draw()
 
     def get_pil_image(self) -> Optional[Image.Image]:
@@ -565,3 +810,7 @@ class ImageDisplayFrame(Gtk.Frame):
     def inpaint_mode(self) -> bool:
         """Check if inpaint mode is active."""
         return self._display.inpaint_mode
+
+    def reset_zoom(self):
+        """Reset zoom to fit window."""
+        self._display.reset_zoom()
