@@ -180,6 +180,79 @@ class SRVGGNetCompact(nn.Module):
 UPSCALE_AVAILABLE = True
 
 
+def convert_old_esrgan_state_dict(old_state_dict: dict) -> dict:
+    """
+    Convert old ESRGAN state dict format to new Real-ESRGAN format.
+
+    Old format uses keys like:
+    - model.0.weight -> conv_first.weight
+    - model.1.sub.{N}.RDB{M}.conv{K}.0.weight -> body.{N}.rdb{M}.conv{K}.weight
+    - model.1.sub.23.weight -> conv_body.weight
+    - model.3.weight -> conv_up1.weight
+    - model.6.weight -> conv_up2.weight
+    - model.8.weight -> conv_hr.weight
+    - model.10.weight -> conv_last.weight
+    """
+    import re
+
+    new_state_dict = {}
+
+    for old_key, value in old_state_dict.items():
+        new_key = old_key
+
+        # model.0 -> conv_first
+        if old_key.startswith("model.0."):
+            new_key = old_key.replace("model.0.", "conv_first.")
+
+        # model.1.sub.{N}.RDB{M}.conv{K}.0 -> body.{N}.rdb{M}.conv{K}
+        elif old_key.startswith("model.1.sub."):
+            # Check if this is conv_body (the last sub module, usually 23)
+            match = re.match(r"model\.1\.sub\.(\d+)\.(weight|bias)$", old_key)
+            if match:
+                # This is conv_body
+                new_key = f"conv_body.{match.group(2)}"
+            else:
+                # This is an RRDB block
+                # model.1.sub.{N}.RDB{M}.conv{K}.0.{weight/bias}
+                match = re.match(
+                    r"model\.1\.sub\.(\d+)\.RDB(\d+)\.conv(\d+)\.0\.(weight|bias)$",
+                    old_key
+                )
+                if match:
+                    block_num = match.group(1)
+                    rdb_num = match.group(2).lower()
+                    conv_num = match.group(3)
+                    weight_type = match.group(4)
+                    new_key = f"body.{block_num}.rdb{rdb_num}.conv{conv_num}.{weight_type}"
+
+        # model.3 -> conv_up1
+        elif old_key.startswith("model.3."):
+            new_key = old_key.replace("model.3.", "conv_up1.")
+
+        # model.6 -> conv_up2
+        elif old_key.startswith("model.6."):
+            new_key = old_key.replace("model.6.", "conv_up2.")
+
+        # model.8 -> conv_hr
+        elif old_key.startswith("model.8."):
+            new_key = old_key.replace("model.8.", "conv_hr.")
+
+        # model.10 -> conv_last
+        elif old_key.startswith("model.10."):
+            new_key = old_key.replace("model.10.", "conv_last.")
+
+        new_state_dict[new_key] = value
+
+    return new_state_dict
+
+
+def is_old_esrgan_format(state_dict: dict) -> bool:
+    """Check if the state dict uses the old ESRGAN format."""
+    keys = list(state_dict.keys())
+    # Old format has keys starting with "model."
+    return any(k.startswith("model.0.") or k.startswith("model.1.sub.") for k in keys)
+
+
 class UpscaleBackend:
     """Backend for image upscaling using Real-ESRGAN models."""
 
@@ -366,6 +439,12 @@ class UpscaleBackend:
 
             state_dict = loadnet[keyname] if keyname else loadnet
             print(f"State dict keys: {list(state_dict.keys())[:5]}...")
+
+            # Check if this is old ESRGAN format and convert if needed
+            if is_old_esrgan_format(state_dict):
+                print("Detected old ESRGAN format, converting keys...")
+                state_dict = convert_old_esrgan_state_dict(state_dict)
+                print(f"Converted state dict keys: {list(state_dict.keys())[:5]}...")
 
             # Try strict loading first, fall back to non-strict
             try:

@@ -592,6 +592,9 @@ class WorkScreen(Gtk.Box):
 
     def _update_upscale_button_state(self):
         """Update the upscale button state based on current conditions."""
+        # Guard against being called before UI is fully built
+        if not hasattr(self, '_image_display') or not hasattr(self, '_toolbar'):
+            return
         # Check if there's an image to upscale
         has_image = self._image_display.get_pil_image() is not None
         # Check if upscaling is enabled and a model is selected
