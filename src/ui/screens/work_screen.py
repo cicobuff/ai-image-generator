@@ -618,8 +618,10 @@ class WorkScreen(Gtk.Box):
         """Handle Inpaint Mode toggle."""
         self._image_display.set_inpaint_mode(enabled)
         if enabled:
+            self._center_paned.add_css_class("center-panel-edit-mode")
             self._status_bar.set_text("Inpaint mode enabled - select a mask tool to draw")
         else:
+            self._center_paned.remove_css_class("center-panel-edit-mode")
             self._status_bar.set_text("Inpaint mode disabled")
 
     def _on_inpaint_tool_changed(self, tool: InpaintTool):

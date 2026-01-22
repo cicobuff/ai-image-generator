@@ -103,6 +103,111 @@ window {
     margin-right: 6px;
 }
 
+/* Dark grey button style (Load/Clear Models) */
+.dark-grey-button {
+    background: #424242;
+    color: white;
+    border: none;
+}
+
+.dark-grey-button:hover {
+    background: #616161;
+}
+
+.dark-grey-button:active {
+    background: #303030;
+}
+
+.dark-grey-button:disabled {
+    background: alpha(#424242, 0.4);
+    color: alpha(white, 0.6);
+}
+
+/* Blue action button style (Generate, Img2Img, Upscale) */
+.blue-button {
+    background: #2196F3;
+    color: white;
+    border: none;
+}
+
+.blue-button:hover {
+    background: #42A5F5;
+}
+
+.blue-button:active {
+    background: #1976D2;
+}
+
+.blue-button:disabled {
+    background: alpha(#2196F3, 0.4);
+    color: alpha(white, 0.6);
+}
+
+/* Green action button style (Generate Inpaint) */
+.green-button {
+    background: #4CAF50;
+    color: white;
+    border: none;
+}
+
+.green-button:hover {
+    background: #66BB6A;
+}
+
+.green-button:active {
+    background: #388E3C;
+}
+
+.green-button:disabled {
+    background: alpha(#4CAF50, 0.4);
+    color: alpha(white, 0.6);
+}
+
+/* Inpaint mode toggle button */
+.inpaint-toggle {
+    background: #A5D6A7;
+    color: #1B5E20;
+    border: none;
+}
+
+.inpaint-toggle:hover {
+    background: #81C784;
+}
+
+.inpaint-toggle:checked {
+    background: #4CAF50;
+    color: white;
+}
+
+.inpaint-toggle:checked:hover {
+    background: #66BB6A;
+}
+
+/* Green toggle button style (Rect Mask, Paint Mask) */
+.green-toggle {
+    background: #4CAF50;
+    color: white;
+    border: none;
+}
+
+.green-toggle:hover {
+    background: #66BB6A;
+}
+
+.green-toggle:checked {
+    background: #2E7D32;
+    color: white;
+}
+
+.green-toggle:checked:hover {
+    background: #388E3C;
+}
+
+.green-toggle:disabled {
+    background: alpha(#4CAF50, 0.4);
+    color: alpha(white, 0.6);
+}
+
 /* Model selector */
 .model-selector {
     margin-bottom: 4px;
@@ -144,6 +249,12 @@ window {
 /* Image display */
 .image-display {
     background-color: #1a1a1a;
+    border-radius: 4px;
+}
+
+/* Center panel in inpaint/edit mode - inner border using inset box-shadow */
+.center-panel-edit-mode {
+    box-shadow: inset 0 0 0 3px #4CAF50;
     border-radius: 4px;
 }
 

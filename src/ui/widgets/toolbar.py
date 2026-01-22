@@ -49,6 +49,7 @@ class Toolbar(Gtk.Box):
         self._current_tool = InpaintTool.NONE
         self._model_loaded = False
         self._upscale_enabled = False
+        self._has_image = False
 
         self.add_css_class("toolbar")
         self._build_ui()
@@ -56,13 +57,27 @@ class Toolbar(Gtk.Box):
 
     def _build_ui(self):
         """Build the toolbar UI."""
-        # Load Models button
-        self._load_button = Gtk.Button(label="Load Models")
+        # Load Models button with icon
+        self._load_button = Gtk.Button()
+        load_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        load_icon = Gtk.Image.new_from_icon_name("document-open-symbolic")
+        load_label = Gtk.Label(label="Load Models")
+        load_box.append(load_icon)
+        load_box.append(load_label)
+        self._load_button.set_child(load_box)
+        self._load_button.add_css_class("dark-grey-button")
         self._load_button.connect("clicked", self._on_load_clicked)
         self.append(self._load_button)
 
-        # Clear Models button
-        self._clear_button = Gtk.Button(label="Clear Models")
+        # Clear Models button with icon
+        self._clear_button = Gtk.Button()
+        clear_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        clear_icon = Gtk.Image.new_from_icon_name("edit-clear-all-symbolic")
+        clear_label = Gtk.Label(label="Clear Models")
+        clear_box.append(clear_icon)
+        clear_box.append(clear_label)
+        self._clear_button.set_child(clear_box)
+        self._clear_button.add_css_class("dark-grey-button")
         self._clear_button.connect("clicked", self._on_clear_clicked)
         self.append(self._clear_button)
 
@@ -72,20 +87,40 @@ class Toolbar(Gtk.Box):
         separator.set_margin_end(8)
         self.append(separator)
 
-        # Generate button
-        self._generate_button = Gtk.Button(label="Generate")
-        self._generate_button.add_css_class("suggested-action")
+        # Generate button with icon
+        self._generate_button = Gtk.Button()
+        generate_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        generate_icon = Gtk.Image.new_from_icon_name("media-playback-start-symbolic")
+        generate_label = Gtk.Label(label="Generate")
+        generate_box.append(generate_icon)
+        generate_box.append(generate_label)
+        self._generate_button.set_child(generate_box)
+        self._generate_button.add_css_class("blue-button")
         self._generate_button.connect("clicked", self._on_generate_clicked)
         self.append(self._generate_button)
 
-        # Image to Image button
-        self._img2img_button = Gtk.Button(label="Image to Image")
+        # Image to Image button with icon
+        self._img2img_button = Gtk.Button()
+        img2img_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        img2img_icon = Gtk.Image.new_from_icon_name("image-x-generic-symbolic")
+        img2img_label = Gtk.Label(label="Img2Img")
+        img2img_box.append(img2img_icon)
+        img2img_box.append(img2img_label)
+        self._img2img_button.set_child(img2img_box)
+        self._img2img_button.add_css_class("blue-button")
         self._img2img_button.set_tooltip_text("Generate a new image based on the current image")
         self._img2img_button.connect("clicked", self._on_img2img_clicked)
         self.append(self._img2img_button)
 
-        # Upscale button
-        self._upscale_button = Gtk.Button(label="Upscale")
+        # Upscale button with icon
+        self._upscale_button = Gtk.Button()
+        upscale_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        upscale_icon = Gtk.Image.new_from_icon_name("zoom-in-symbolic")
+        upscale_label = Gtk.Label(label="Upscale")
+        upscale_box.append(upscale_icon)
+        upscale_box.append(upscale_label)
+        self._upscale_button.set_child(upscale_box)
+        self._upscale_button.add_css_class("blue-button")
         self._upscale_button.set_tooltip_text("Upscale the current image using the selected upscaler")
         self._upscale_button.connect("clicked", self._on_upscale_clicked)
         self._upscale_button.set_sensitive(False)  # Disabled by default
@@ -98,37 +133,71 @@ class Toolbar(Gtk.Box):
         self._inpaint_separator.set_visible(False)
         self.append(self._inpaint_separator)
 
-        # Inpaint Mode toggle
-        self._inpaint_toggle = Gtk.ToggleButton(label="Inpaint Mode")
+        # Inpaint Mode toggle with icon
+        self._inpaint_toggle = Gtk.ToggleButton()
+        inpaint_mode_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        inpaint_mode_icon = Gtk.Image.new_from_icon_name("applications-graphics-symbolic")
+        inpaint_mode_label = Gtk.Label(label="Inpaint Mode")
+        inpaint_mode_box.append(inpaint_mode_icon)
+        inpaint_mode_box.append(inpaint_mode_label)
+        self._inpaint_toggle.set_child(inpaint_mode_box)
         self._inpaint_toggle.set_tooltip_text("Enable inpainting mode to draw masks")
+        self._inpaint_toggle.add_css_class("inpaint-toggle")
         self._inpaint_toggle.connect("toggled", self._on_inpaint_toggled)
         self._inpaint_toggle.set_visible(False)
         self.append(self._inpaint_toggle)
 
-        # Rect Mask tool button (visible in inpaint mode)
-        self._rect_mask_button = Gtk.ToggleButton(label="Rect Mask")
+        # Rect Mask tool button with icon (visible in inpaint mode)
+        self._rect_mask_button = Gtk.ToggleButton()
+        rect_mask_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        rect_mask_icon = Gtk.Image.new_from_icon_name("view-fullscreen-symbolic")
+        rect_mask_label = Gtk.Label(label="Rect Mask")
+        rect_mask_box.append(rect_mask_icon)
+        rect_mask_box.append(rect_mask_label)
+        self._rect_mask_button.set_child(rect_mask_box)
         self._rect_mask_button.set_tooltip_text("Draw rectangular masks")
+        self._rect_mask_button.add_css_class("green-toggle")
         self._rect_mask_button.connect("toggled", self._on_rect_mask_toggled)
         self._rect_mask_button.set_visible(False)
         self.append(self._rect_mask_button)
 
-        # Paint Mask tool button (visible in inpaint mode)
-        self._paint_mask_button = Gtk.ToggleButton(label="Paint Mask")
+        # Paint Mask tool button with icon (visible in inpaint mode)
+        self._paint_mask_button = Gtk.ToggleButton()
+        paint_mask_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        paint_mask_icon = Gtk.Image.new_from_icon_name("radio-symbolic")
+        paint_mask_label = Gtk.Label(label="Paint Mask")
+        paint_mask_box.append(paint_mask_icon)
+        paint_mask_box.append(paint_mask_label)
+        self._paint_mask_button.set_child(paint_mask_box)
         self._paint_mask_button.set_tooltip_text("Paint masks with brush (25px radius)")
+        self._paint_mask_button.add_css_class("green-toggle")
         self._paint_mask_button.connect("toggled", self._on_paint_mask_toggled)
         self._paint_mask_button.set_visible(False)
         self.append(self._paint_mask_button)
 
-        # Clear Masks button (visible in inpaint mode)
-        self._clear_masks_button = Gtk.Button(label="Clear Masks")
+        # Clear Masks button with icon (visible in inpaint mode)
+        self._clear_masks_button = Gtk.Button()
+        clear_masks_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        clear_masks_icon = Gtk.Image.new_from_icon_name("edit-clear-symbolic")
+        clear_masks_label = Gtk.Label(label="Clear Masks")
+        clear_masks_box.append(clear_masks_icon)
+        clear_masks_box.append(clear_masks_label)
+        self._clear_masks_button.set_child(clear_masks_box)
         self._clear_masks_button.set_tooltip_text("Clear all drawn masks")
+        self._clear_masks_button.add_css_class("green-button")
         self._clear_masks_button.connect("clicked", self._on_clear_masks_clicked)
         self._clear_masks_button.set_visible(False)
         self.append(self._clear_masks_button)
 
-        # Generate Inpaint button (visible in inpaint mode)
-        self._generate_inpaint_button = Gtk.Button(label="Generate Inpaint")
-        self._generate_inpaint_button.add_css_class("suggested-action")
+        # Generate Inpaint button with icon (visible in inpaint mode)
+        self._generate_inpaint_button = Gtk.Button()
+        inpaint_gen_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        inpaint_gen_icon = Gtk.Image.new_from_icon_name("media-playback-start-symbolic")
+        inpaint_gen_label = Gtk.Label(label="Generate Inpaint")
+        inpaint_gen_box.append(inpaint_gen_icon)
+        inpaint_gen_box.append(inpaint_gen_label)
+        self._generate_inpaint_button.set_child(inpaint_gen_box)
+        self._generate_inpaint_button.add_css_class("green-button")
         self._generate_inpaint_button.set_tooltip_text("Generate inpainted image in masked areas")
         self._generate_inpaint_button.connect("clicked", self._on_generate_inpaint_clicked)
         self._generate_inpaint_button.set_visible(False)
@@ -244,31 +313,37 @@ class Toolbar(Gtk.Box):
         self._paint_mask_button.set_visible(visible)
         self._clear_masks_button.set_visible(visible)
         self._generate_inpaint_button.set_visible(visible)
-        # Hide normal generation buttons in inpaint mode
-        self._generate_button.set_visible(not visible)
-        self._img2img_button.set_visible(not visible)
+        # Disable normal generation buttons in inpaint mode (keep visible)
+        self._generate_button.set_sensitive(not visible)
+        self._img2img_button.set_sensitive(not visible)
 
     def set_state(self, state: GenerationState):
         """Update toolbar state based on generation state."""
         if state == GenerationState.IDLE:
             self._load_button.set_sensitive(True)
-            # Restore generation button sensitivity based on model loaded state
+            self._clear_button.set_sensitive(self._model_loaded)
+            # Restore generation button sensitivity
             self._update_generation_buttons_sensitivity()
             self._cancel_button.set_visible(False)
             self._progress_bar.set_visible(False)
-            # Restore upscale button visibility
-            self._upscale_button.set_visible(True)
-            # Restore visibility based on inpaint mode
+            # Restore inpaint controls sensitivity (based on image presence, not model loaded)
+            self._inpaint_toggle.set_sensitive(self._has_image)
+            self._rect_mask_button.set_sensitive(True)
+            self._paint_mask_button.set_sensitive(True)
+            self._clear_masks_button.set_sensitive(True)
+            # Restore state based on inpaint mode
             if self._inpaint_mode:
-                self._generate_button.set_visible(False)
-                self._img2img_button.set_visible(False)
+                # Keep Generate/Img2Img visible but disabled in inpaint mode
+                self._generate_button.set_sensitive(False)
+                self._img2img_button.set_sensitive(False)
                 self._rect_mask_button.set_visible(True)
                 self._paint_mask_button.set_visible(True)
                 self._clear_masks_button.set_visible(True)
                 self._generate_inpaint_button.set_visible(True)
             else:
-                self._generate_button.set_visible(True)
-                self._img2img_button.set_visible(True)
+                # Restore sensitivity when not in inpaint mode
+                self._generate_button.set_sensitive(True)
+                self._img2img_button.set_sensitive(True)
 
         elif state == GenerationState.LOADING:
             self._load_button.set_sensitive(False)
@@ -284,23 +359,23 @@ class Toolbar(Gtk.Box):
         elif state == GenerationState.GENERATING:
             self._load_button.set_sensitive(False)
             self._clear_button.set_sensitive(False)
-            self._generate_button.set_visible(False)
-            self._img2img_button.set_visible(False)
-            self._upscale_button.set_visible(False)
+            self._generate_button.set_sensitive(False)
+            self._img2img_button.set_sensitive(False)
+            self._upscale_button.set_sensitive(False)
             self._inpaint_toggle.set_sensitive(False)
-            self._rect_mask_button.set_visible(False)
-            self._paint_mask_button.set_visible(False)
-            self._clear_masks_button.set_visible(False)
-            self._generate_inpaint_button.set_visible(False)
+            self._rect_mask_button.set_sensitive(False)
+            self._paint_mask_button.set_sensitive(False)
+            self._clear_masks_button.set_sensitive(False)
+            self._generate_inpaint_button.set_sensitive(False)
             self._cancel_button.set_visible(True)
             self._progress_bar.set_visible(True)
 
         elif state == GenerationState.CANCELLING:
             self._load_button.set_sensitive(False)
             self._clear_button.set_sensitive(False)
-            self._generate_button.set_visible(False)
-            self._img2img_button.set_visible(False)
-            self._upscale_button.set_visible(False)
+            self._generate_button.set_sensitive(False)
+            self._img2img_button.set_sensitive(False)
+            self._upscale_button.set_sensitive(False)
             self._inpaint_toggle.set_sensitive(False)
             self._cancel_button.set_sensitive(False)
             self._progress_bar.set_visible(True)
@@ -311,18 +386,20 @@ class Toolbar(Gtk.Box):
         self._update_generation_buttons_sensitivity()
 
     def _update_generation_buttons_sensitivity(self):
-        """Update sensitivity of all generation-related buttons based on model loaded state."""
+        """Update sensitivity of all generation-related buttons based on model loaded state and inpaint mode."""
         loaded = self._model_loaded
         # Generate buttons are always active - they will auto-load models if needed
-        self._generate_button.set_sensitive(True)
-        self._img2img_button.set_sensitive(True)
+        # But they should be disabled in inpaint mode (keep visible though)
+        self._generate_button.set_sensitive(not self._inpaint_mode)
+        self._img2img_button.set_sensitive(not self._inpaint_mode)
         self._generate_inpaint_button.set_sensitive(True)
-        # Clear and inpaint toggle only make sense when model is loaded
+        # Clear only makes sense when model is loaded
         self._clear_button.set_sensitive(loaded)
-        self._inpaint_toggle.set_sensitive(loaded)
+        # Inpaint toggle is based on image presence, not model loaded (handled in set_has_image)
 
     def set_has_image(self, has_image: bool):
         """Update img2img button based on whether there's an image to use."""
+        self._has_image = has_image
         # img2img requires both a loaded model and an image
         # The model check is handled by set_model_loaded
         self._img2img_button.set_tooltip_text(
@@ -332,6 +409,8 @@ class Toolbar(Gtk.Box):
         # Show/hide inpaint toggle based on image presence
         self._inpaint_separator.set_visible(has_image)
         self._inpaint_toggle.set_visible(has_image)
+        # Inpaint toggle is active when there's an image (doesn't require model to be loaded)
+        self._inpaint_toggle.set_sensitive(has_image)
         # If no image and inpaint mode was on, turn it off
         if not has_image and self._inpaint_mode:
             self._inpaint_toggle.set_active(False)
