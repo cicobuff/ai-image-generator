@@ -11,6 +11,7 @@ from src.core.config import config_manager
 from src.core.model_manager import model_manager, ModelType
 from src.core.generation_service import generation_service, GenerationState, GenerationResult
 from src.backends.upscale_backend import upscale_backend
+from src.backends.diffusers_backend import diffusers_backend
 from src.ui.widgets.model_selector import ModelSelector
 from src.ui.widgets.vram_display import VRAMDisplay
 from src.ui.widgets.generation_params import GenerationParamsWidget
@@ -324,6 +325,22 @@ class WorkScreen(Gtk.Box):
         active_loras = self._lora_panel.get_active_loras()
         return [(lora.path, lora.name, lora.weight) for lora in active_loras]
 
+    def _needs_model_reload(self) -> bool:
+        """Check if models need to be (re)loaded based on selection changes."""
+        # If no model loaded at all, need to load
+        if not generation_service.is_model_loaded:
+            return True
+
+        # Check if selected checkpoint differs from loaded checkpoint
+        selected_checkpoint = model_manager.loaded.checkpoint
+        if selected_checkpoint:
+            selected_path = str(selected_checkpoint.path)
+            loaded_path = diffusers_backend.loaded_checkpoint
+            if selected_path != loaded_path:
+                return True
+
+        return False
+
     def _on_generate(self):
         """Handle Generate button click."""
         # Check if a checkpoint is selected
@@ -336,8 +353,8 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please enter a positive prompt")
             return
 
-        # Auto-load models if not loaded
-        if not generation_service.is_model_loaded:
+        # Auto-load models if not loaded or if selected model changed
+        if self._needs_model_reload():
             self._pending_generation = "generate"
             self._on_load_models()
             return
@@ -391,8 +408,8 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please enter a positive prompt")
             return
 
-        # Auto-load models if not loaded
-        if not generation_service.is_model_loaded:
+        # Auto-load models if not loaded or if selected model changed
+        if self._needs_model_reload():
             self._pending_generation = "img2img"
             self._on_load_models()
             return
@@ -499,8 +516,8 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please enter a positive prompt")
             return
 
-        # Auto-load models if not loaded
-        if not generation_service.is_model_loaded:
+        # Auto-load models if not loaded or if selected model changed
+        if self._needs_model_reload():
             self._pending_generation = "inpaint"
             self._on_load_models()
             return

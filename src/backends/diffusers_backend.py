@@ -101,6 +101,16 @@ class DiffusersBackend:
         """Check if loaded model is SDXL."""
         return self._is_sdxl
 
+    @property
+    def loaded_checkpoint(self) -> Optional[str]:
+        """Get path of currently loaded checkpoint, or None if no model loaded."""
+        return self._loaded_checkpoint
+
+    @property
+    def loaded_vae(self) -> Optional[str]:
+        """Get path of currently loaded VAE, or None if using embedded."""
+        return self._loaded_vae
+
     def set_gpus(self, indices: list[int]) -> None:
         """Set which GPUs to use for generation."""
         self._gpu_indices = indices if indices else [0]
