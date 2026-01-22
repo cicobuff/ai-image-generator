@@ -65,6 +65,7 @@ A GTK 4 desktop application for AI image generation using Stable Diffusion, buil
 | `Ctrl+0` | Reset zoom to fit window |
 | `R` | Reset zoom to fit window |
 | `0` | Reset zoom to fit window |
+| `Delete` or `Backspace` | Delete selected image from gallery |
 
 ## Mouse Controls
 

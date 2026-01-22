@@ -7,7 +7,7 @@ import io
 
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, GdkPixbuf, GLib
+from gi.repository import Gtk, Gdk, GdkPixbuf, GLib
 
 from PIL import Image
 
@@ -128,10 +128,12 @@ class ThumbnailGallery(Gtk.Box):
         self,
         on_image_selected: Optional[Callable[[Path], None]] = None,
         on_directory_changed: Optional[Callable[[Path], None]] = None,
+        on_image_deleted: Optional[Callable[[Path], None]] = None,
     ):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._on_image_selected = on_image_selected
         self._on_directory_changed = on_directory_changed
+        self._on_image_deleted = on_image_deleted
         self._thumbnails: List[ThumbnailItem] = []
         self._image_paths: List[Path] = []  # Store paths for re-sorting
         self._selected_path: Optional[Path] = None
@@ -143,6 +145,7 @@ class ThumbnailGallery(Gtk.Box):
 
         self.add_css_class("thumbnail-gallery")
         self._build_ui()
+        self._setup_key_controller()
 
     def _build_ui(self):
         """Build the gallery UI."""
@@ -235,6 +238,77 @@ class ThumbnailGallery(Gtk.Box):
         self._flowbox.set_row_spacing(4)
         self._flowbox.set_column_spacing(4)
         scrolled.set_child(self._flowbox)
+
+    def _setup_key_controller(self):
+        """Set up keyboard controller for Delete key."""
+        key_controller = Gtk.EventControllerKey()
+        key_controller.connect("key-pressed", self._on_key_pressed)
+        self.add_controller(key_controller)
+        # Make widget focusable
+        self.set_focusable(True)
+
+    def _on_key_pressed(self, controller, keyval, keycode, state):
+        """Handle key press events."""
+        if keyval == Gdk.KEY_Delete or keyval == Gdk.KEY_BackSpace:
+            self.delete_selected()
+            return True
+        return False
+
+    def delete_selected(self) -> bool:
+        """Delete the currently selected image.
+
+        Returns:
+            True if an image was deleted, False otherwise.
+        """
+        if self._selected_path is None:
+            return False
+
+        path_to_delete = self._selected_path
+
+        # Find the thumbnail widget
+        thumbnail_to_remove = None
+        thumbnail_index = -1
+        for i, thumb in enumerate(self._thumbnails):
+            if thumb.path == path_to_delete:
+                thumbnail_to_remove = thumb
+                thumbnail_index = i
+                break
+
+        if thumbnail_to_remove is None:
+            return False
+
+        try:
+            # Delete the file from disk
+            if path_to_delete.exists():
+                path_to_delete.unlink()
+
+            # Remove from internal lists
+            if path_to_delete in self._image_paths:
+                self._image_paths.remove(path_to_delete)
+
+            # Remove thumbnail widget
+            self._flowbox.remove(thumbnail_to_remove)
+            self._thumbnails.remove(thumbnail_to_remove)
+
+            # Select next image if available
+            self._selected_path = None
+            if self._thumbnails:
+                # Try to select the next image, or the previous if we deleted the last one
+                next_index = min(thumbnail_index, len(self._thumbnails) - 1)
+                if next_index >= 0:
+                    next_thumb = self._thumbnails[next_index]
+                    next_thumb.set_selected(True)
+                    self._selected_path = next_thumb.path
+
+            # Notify callback that image was deleted
+            if self._on_image_deleted:
+                self._on_image_deleted(path_to_delete)
+
+            return True
+
+        except Exception as e:
+            print(f"Error deleting image {path_to_delete}: {e}")
+            return False
 
     def _scan_subdirectories(self):
         """Scan for subdirectories in the base directory."""

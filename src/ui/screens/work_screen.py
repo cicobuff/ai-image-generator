@@ -280,6 +280,7 @@ class WorkScreen(Gtk.Box):
         self._thumbnail_gallery = ThumbnailGallery(
             on_image_selected=self._on_thumbnail_selected,
             on_directory_changed=self._on_gallery_directory_changed,
+            on_image_deleted=self._on_image_deleted,
         )
         self._thumbnail_gallery.set_vexpand(True)
         box.append(self._thumbnail_gallery)
@@ -368,6 +369,32 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text(f"Output directory: {directory.name or 'root'}")
         else:
             self._status_bar.set_text(f"New directory: {directory.name} (will be created on save)")
+
+    def _on_image_deleted(self, path: Path):
+        """Handle image deletion from gallery."""
+        # Exit inpaint mode if active
+        if self._toolbar.inpaint_mode:
+            self._toolbar.exit_inpaint_mode()
+
+        # Check if gallery selected a new image after deletion
+        new_selected = self._thumbnail_gallery.get_selected_path()
+        if new_selected and new_selected.exists():
+            # Load the newly selected image
+            self._on_thumbnail_selected(new_selected)
+            self._status_bar.set_text(f"Deleted: {path.name}")
+        else:
+            # No more images - clear the display
+            self._image_display.clear()
+
+            # Update toolbar state
+            self._toolbar.set_has_image(False)
+            self._update_upscale_button_state()
+
+            # Clear prompts to defaults
+            self._prompt_panel.set_prompts("", "")
+            self._params_widget.reset_to_defaults()
+
+            self._status_bar.set_text(f"Deleted: {path.name}")
 
     def _on_lora_changed(self):
         """Handle LoRA selection change."""
