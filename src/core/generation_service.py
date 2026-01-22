@@ -15,6 +15,7 @@ from src.core.model_manager import model_manager
 from src.core.gpu_manager import gpu_manager
 from src.backends.diffusers_backend import diffusers_backend, GenerationParams
 from src.utils.constants import OUTPUT_FORMAT
+from src.utils.metadata import GenerationMetadata, save_image_with_metadata
 
 
 class GenerationState(Enum):
@@ -42,6 +43,12 @@ class GenerationService:
         self._state = GenerationState.IDLE
         self._cancel_requested = False
         self._current_thread: Optional[threading.Thread] = None
+
+        # Track loaded model info for metadata
+        self._loaded_checkpoint_name: str = ""
+        self._loaded_vae_name: str = ""
+        self._loaded_clip_name: str = ""
+        self._loaded_model_type: str = ""
 
         # Callbacks
         self._on_state_changed: list[Callable[[GenerationState], None]] = []
@@ -143,6 +150,18 @@ class GenerationService:
                 )
 
                 if success:
+                    # Store model names for metadata
+                    self._loaded_checkpoint_name = Path(load_config["checkpoint_path"]).stem
+                    self._loaded_model_type = load_config.get("model_type", "sdxl")
+                    if load_config.get("vae_path"):
+                        self._loaded_vae_name = Path(load_config["vae_path"]).stem
+                    else:
+                        self._loaded_vae_name = ""
+                    if load_config.get("clip_path"):
+                        self._loaded_clip_name = Path(load_config["clip_path"]).stem
+                    else:
+                        self._loaded_clip_name = ""
+
                     self._notify_progress("Model loaded", 1.0)
                 else:
                     self._notify_progress("Failed to load model", 0.0)
@@ -238,7 +257,7 @@ class GenerationService:
             self._set_state(GenerationState.CANCELLING)
 
     def _save_image(self, image: Image.Image, params: GenerationParams) -> Path:
-        """Save generated image to output directory."""
+        """Save generated image to output directory with metadata."""
         output_dir = config_manager.config.get_output_path()
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -247,7 +266,25 @@ class GenerationService:
         filename = f"gen_{timestamp}_seed{params.seed}.{OUTPUT_FORMAT}"
         output_path = output_dir / filename
 
-        image.save(output_path, OUTPUT_FORMAT.upper())
+        # Create metadata
+        metadata = GenerationMetadata(
+            checkpoint=self._loaded_checkpoint_name,
+            vae=self._loaded_vae_name,
+            clip=self._loaded_clip_name,
+            prompt=params.prompt,
+            negative_prompt=params.negative_prompt,
+            width=params.width,
+            height=params.height,
+            steps=params.steps,
+            cfg_scale=params.cfg_scale,
+            seed=params.seed,
+            sampler=params.sampler,
+            scheduler=params.scheduler,
+            model_type=self._loaded_model_type,
+        )
+
+        # Save with metadata
+        save_image_with_metadata(image, output_path, metadata)
         return output_path
 
 

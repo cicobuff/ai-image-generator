@@ -254,3 +254,27 @@ class GenerationParamsWidget(Gtk.Box):
     def set_seed(self, seed: int):
         """Set the seed value."""
         self._seed_spin.set_value(seed)
+
+    def set_size(self, width: int, height: int):
+        """Set the image size."""
+        self._width_spin.set_value(width)
+        self._height_spin.set_value(height)
+        self._update_size_preset_from_values()
+
+    def set_steps(self, steps: int):
+        """Set the number of steps."""
+        self._steps_spin.set_value(steps)
+
+    def set_cfg_scale(self, cfg_scale: float):
+        """Set the CFG scale."""
+        self._cfg_spin.set_value(cfg_scale)
+
+    def set_sampler(self, sampler: str):
+        """Set the sampler by name."""
+        sampler_names = list(SAMPLERS.keys())
+        if sampler in sampler_names:
+            self._sampler_dropdown.set_selected(sampler_names.index(sampler))
+
+    def reset_to_defaults(self):
+        """Reset all parameters to defaults."""
+        self._load_defaults()

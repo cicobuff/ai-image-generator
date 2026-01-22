@@ -17,6 +17,7 @@ from src.ui.widgets.prompt_entry import PromptPanel
 from src.ui.widgets.image_display import ImageDisplayFrame
 from src.ui.widgets.thumbnail_gallery import ThumbnailGallery
 from src.ui.widgets.toolbar import Toolbar
+from src.utils.metadata import load_metadata_from_image
 
 
 class WorkScreen(Gtk.Box):
@@ -312,4 +313,34 @@ class WorkScreen(Gtk.Box):
     def _on_thumbnail_selected(self, path: Path):
         """Handle thumbnail selection."""
         self._image_display.set_image_from_path(path)
-        self._status_bar.set_text(f"Loaded: {path.name}")
+
+        # Try to load metadata and restore parameters
+        metadata = load_metadata_from_image(path)
+
+        if metadata:
+            # Restore prompts
+            self._prompt_panel.set_prompts(
+                metadata.prompt,
+                metadata.negative_prompt
+            )
+
+            # Restore generation parameters
+            self._params_widget.set_size(metadata.width, metadata.height)
+            self._params_widget.set_steps(metadata.steps)
+            self._params_widget.set_cfg_scale(metadata.cfg_scale)
+            self._params_widget.set_seed(metadata.seed)
+            self._params_widget.set_sampler(metadata.sampler)
+
+            # Try to select models by name (if available in current model list)
+            if metadata.checkpoint:
+                self._checkpoint_selector.set_selected_by_name(metadata.checkpoint)
+            if metadata.vae:
+                self._vae_selector.set_selected_by_name(metadata.vae)
+            if metadata.clip:
+                self._clip_selector.set_selected_by_name(metadata.clip)
+
+            self._status_bar.set_text(f"Loaded: {path.name} (parameters restored)")
+        else:
+            # No metadata - reset to defaults
+            self._params_widget.reset_to_defaults()
+            self._status_bar.set_text(f"Loaded: {path.name} (no metadata - using defaults)")

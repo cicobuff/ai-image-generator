@@ -123,3 +123,16 @@ class PromptPanel(Gtk.Box):
         """Clear both prompts."""
         self._positive_entry.clear()
         self._negative_entry.clear()
+
+    def set_positive_prompt(self, text: str):
+        """Set the positive prompt text."""
+        self._positive_entry.set_text(text)
+
+    def set_negative_prompt(self, text: str):
+        """Set the negative prompt text."""
+        self._negative_entry.set_text(text)
+
+    def set_prompts(self, positive: str, negative: str):
+        """Set both prompts at once."""
+        self._positive_entry.set_text(positive)
+        self._negative_entry.set_text(negative)
