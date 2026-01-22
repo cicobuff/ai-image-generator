@@ -31,6 +31,9 @@ class WorkScreen(Gtk.Box):
     def __init__(self):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._last_seed_was_random = False
+        # Track pending generation to run after model loading
+        # Values: None, "generate", "img2img", "inpaint"
+        self._pending_generation = None
         self._build_ui()
         self._connect_signals()
         self._initial_setup()
@@ -133,6 +136,16 @@ class WorkScreen(Gtk.Box):
             model_type=ModelType.CLIP,
         )
         box.append(self._clip_selector)
+
+        # Torch compile checkbox
+        self._compile_checkbox = Gtk.CheckButton(label="Enable torch.compile (faster, slower first run)")
+        self._compile_checkbox.set_tooltip_text(
+            "Compiles the model for faster inference. First generation will be slower due to compilation. "
+            "Disable if you experience issues."
+        )
+        self._compile_checkbox.set_active(False)  # Disabled by default
+        self._compile_checkbox.set_margin_top(8)
+        box.append(self._compile_checkbox)
 
         # Separator
         separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
@@ -279,10 +292,13 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please select a checkpoint first")
             return
 
-        generation_service.load_models()
+        # Get torch.compile setting
+        enable_compile = self._compile_checkbox.get_active()
+        generation_service.load_models(enable_compile=enable_compile)
 
     def _on_clear_models(self):
         """Handle Clear Models button click."""
+        self._pending_generation = None  # Clear any pending generation
         generation_service.unload_models()
         self._toolbar.set_model_loaded(False)
         self._status_bar.set_text("Models unloaded")
@@ -310,8 +326,9 @@ class WorkScreen(Gtk.Box):
 
     def _on_generate(self):
         """Handle Generate button click."""
-        if not generation_service.is_model_loaded:
-            self._status_bar.set_text("Please load models first")
+        # Check if a checkpoint is selected
+        if not model_manager.loaded.checkpoint:
+            self._status_bar.set_text("Please select a checkpoint first")
             return
 
         positive = self._prompt_panel.get_positive_prompt()
@@ -319,6 +336,17 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please enter a positive prompt")
             return
 
+        # Auto-load models if not loaded
+        if not generation_service.is_model_loaded:
+            self._pending_generation = "generate"
+            self._on_load_models()
+            return
+
+        self._do_generate()
+
+    def _do_generate(self):
+        """Perform the actual generation (called after models are loaded)."""
+        positive = self._prompt_panel.get_positive_prompt()
         negative = self._prompt_panel.get_negative_prompt()
         params = self._params_widget.get_params(positive, negative)
 
@@ -347,8 +375,9 @@ class WorkScreen(Gtk.Box):
 
     def _on_img2img(self):
         """Handle Image to Image button click."""
-        if not generation_service.is_model_loaded:
-            self._status_bar.set_text("Please load models first")
+        # Check if a checkpoint is selected
+        if not model_manager.loaded.checkpoint:
+            self._status_bar.set_text("Please select a checkpoint first")
             return
 
         # Check if there's an image to use as input
@@ -362,6 +391,18 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please enter a positive prompt")
             return
 
+        # Auto-load models if not loaded
+        if not generation_service.is_model_loaded:
+            self._pending_generation = "img2img"
+            self._on_load_models()
+            return
+
+        self._do_img2img()
+
+    def _do_img2img(self):
+        """Perform the actual img2img generation (called after models are loaded)."""
+        input_image = self._image_display.get_pil_image()
+        positive = self._prompt_panel.get_positive_prompt()
         negative = self._prompt_panel.get_negative_prompt()
         params = self._params_widget.get_params(positive, negative)
         strength = self._params_widget.get_strength()
@@ -428,8 +469,9 @@ class WorkScreen(Gtk.Box):
 
     def _on_generate_inpaint(self):
         """Handle Generate Inpaint button click."""
-        if not generation_service.is_model_loaded:
-            self._status_bar.set_text("Please load models first")
+        # Check if a checkpoint is selected
+        if not model_manager.loaded.checkpoint:
+            self._status_bar.set_text("Please select a checkpoint first")
             return
 
         # Check if there's a mask
@@ -457,6 +499,22 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please enter a positive prompt")
             return
 
+        # Auto-load models if not loaded
+        if not generation_service.is_model_loaded:
+            self._pending_generation = "inpaint"
+            self._on_load_models()
+            return
+
+        self._do_generate_inpaint()
+
+    def _do_generate_inpaint(self):
+        """Perform the actual inpaint generation (called after models are loaded)."""
+        original_image = self._image_display.get_original_image()
+        if original_image is None:
+            original_image = self._image_display.get_pil_image()
+
+        mask_image = self._image_display.get_mask_image()
+        positive = self._prompt_panel.get_positive_prompt()
         negative = self._prompt_panel.get_negative_prompt()
         params = self._params_widget.get_params(positive, negative)
         strength = self._params_widget.get_strength()
@@ -493,6 +551,21 @@ class WorkScreen(Gtk.Box):
 
         if state == GenerationState.IDLE:
             self._toolbar.set_model_loaded(generation_service.is_model_loaded)
+
+            # Check for pending generation after model loading
+            if self._pending_generation:
+                pending = self._pending_generation
+                self._pending_generation = None
+                # Only execute if models loaded successfully
+                if generation_service.is_model_loaded:
+                    if pending == "generate":
+                        self._do_generate()
+                    elif pending == "img2img":
+                        self._do_img2img()
+                    elif pending == "inpaint":
+                        self._do_generate_inpaint()
+                else:
+                    self._status_bar.set_text("Model loading failed - generation cancelled")
 
     def _on_progress(self, message: str, progress: float):
         """Handle progress update."""

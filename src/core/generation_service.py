@@ -126,8 +126,12 @@ class GenerationService:
         for callback in self._on_generation_complete:
             GLib.idle_add(callback, result)
 
-    def load_models(self) -> None:
-        """Load selected models in background thread."""
+    def load_models(self, enable_compile: bool = False) -> None:
+        """Load selected models in background thread.
+
+        Args:
+            enable_compile: Whether to enable torch.compile optimization (disabled by default)
+        """
         if self.is_busy:
             return
 
@@ -152,6 +156,7 @@ class GenerationService:
                     vae_path=load_config.get("vae_path"),
                     clip_path=load_config.get("clip_path"),
                     progress_callback=self._notify_progress,
+                    enable_compile=enable_compile,
                 )
 
                 if success:
@@ -167,7 +172,12 @@ class GenerationService:
                     else:
                         self._loaded_clip_name = ""
 
-                    self._notify_progress("Model loaded", 1.0)
+                    # Perform warm-up if torch.compile is enabled
+                    if diffusers_backend.needs_warmup:
+                        self._notify_progress("Compiling model (one-time)...", 0.9)
+                        diffusers_backend.warm_up(self._notify_progress)
+
+                    self._notify_progress("Model loaded and ready", 1.0)
                 else:
                     self._notify_progress("Failed to load model", 0.0)
 
@@ -237,7 +247,7 @@ class GenerationService:
                     params.seed = actual_seed
 
                 print(f"Using seed: {params.seed}")
-                self._notify_progress("Generating image...", 0.0)
+                self._notify_progress("Preparing generation...", 0.0)
                 self._notify_step_progress(0, params.steps)
 
                 # Generate image
@@ -247,6 +257,9 @@ class GenerationService:
                     progress_callback=self._notify_step_progress,
                 )
                 print(f"diffusers_backend.generate() returned: {image is not None}")
+
+                # Show decoding progress (VAE decode happens at the end of pipeline)
+                self._notify_progress("Finalizing image...", 0.95)
 
                 if self._cancel_requested:
                     self._notify_generation_complete(
@@ -288,6 +301,7 @@ class GenerationService:
                             print("Upscaling failed, using original image")
 
                 # Save image with metadata
+                self._notify_progress("Saving image...", 0.98)
                 output_path = self._save_image(
                     image,
                     params,
@@ -299,6 +313,7 @@ class GenerationService:
                     output_dir=output_dir,
                 )
 
+                self._notify_progress("Complete", 1.0)
                 self._notify_generation_complete(
                     GenerationResult(
                         success=True,
@@ -380,7 +395,7 @@ class GenerationService:
                     params.seed = actual_seed
 
                 print(f"Using seed: {params.seed}")
-                self._notify_progress("Generating image (img2img)...", 0.0)
+                self._notify_progress("Encoding prompts...", 0.0)
 
                 # Calculate effective steps
                 effective_steps = max(1, int(params.steps * strength))
@@ -395,6 +410,8 @@ class GenerationService:
                     progress_callback=self._notify_step_progress,
                 )
                 print(f"diffusers_backend.generate_img2img() returned: {image is not None}")
+
+                self._notify_progress("Finalizing image...", 0.95)
 
                 if self._cancel_requested:
                     self._notify_generation_complete(
@@ -435,6 +452,7 @@ class GenerationService:
                             print("Upscaling failed, using original image")
 
                 # Save image with metadata
+                self._notify_progress("Saving image...", 0.98)
                 output_path = self._save_image(
                     image,
                     params,
@@ -448,6 +466,7 @@ class GenerationService:
                     output_dir=output_dir,
                 )
 
+                self._notify_progress("Complete", 1.0)
                 self._notify_generation_complete(
                     GenerationResult(
                         success=True,
@@ -537,7 +556,7 @@ class GenerationService:
                     params.seed = actual_seed
 
                 print(f"Using seed: {params.seed}")
-                self._notify_progress("Generating inpaint...", 0.0)
+                self._notify_progress("Encoding prompts...", 0.0)
 
                 # Calculate effective steps
                 effective_steps = max(1, int(params.steps * strength))
@@ -553,6 +572,8 @@ class GenerationService:
                     progress_callback=self._notify_step_progress,
                 )
                 print(f"diffusers_backend.generate_inpaint() returned: {image is not None}")
+
+                self._notify_progress("Finalizing image...", 0.95)
 
                 if self._cancel_requested:
                     self._notify_generation_complete(
@@ -593,6 +614,7 @@ class GenerationService:
                             print("Upscaling failed, using original image")
 
                 # Save image with metadata
+                self._notify_progress("Saving image...", 0.98)
                 output_path = self._save_image(
                     image,
                     params,
@@ -606,6 +628,7 @@ class GenerationService:
                     output_dir=output_dir,
                 )
 
+                self._notify_progress("Complete", 1.0)
                 self._notify_generation_complete(
                     GenerationResult(
                         success=True,

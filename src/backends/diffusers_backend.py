@@ -4,8 +4,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Callable, Any
 import gc
+import os
+import warnings
 
 import torch
+
+# Suppress harmless warnings from diffusers
+warnings.filterwarnings("ignore", message=".*Pipelines loaded with.*dtype=torch.float16.*cannot run with.*cpu.*")
+warnings.filterwarnings("ignore", message=".*upcast_vae.*is deprecated.*")
+
+# Environment variable to disable torch.compile (set to "1" to disable)
+# Useful if experiencing shutdown issues or compatibility problems
+DISABLE_TORCH_COMPILE = os.environ.get("AIIG_DISABLE_COMPILE", "0") == "1"
 from PIL import Image
 from diffusers import (
     StableDiffusionXLPipeline,
@@ -76,6 +86,10 @@ class DiffusersBackend:
         self._device: str = "cuda:0" if torch.cuda.is_available() else "cpu"
         # LoRA tracking
         self._loaded_loras: list[tuple[str, float]] = []  # List of (path, weight) tuples
+        # Track if torch.compile warm-up has been done
+        self._compiled_warmed_up: bool = False
+        self._torch_compile_enabled: bool = False
+        self._enable_compile: bool = False  # User setting from UI (disabled by default)
 
     @property
     def is_loaded(self) -> bool:
@@ -98,6 +112,7 @@ class DiffusersBackend:
         vae_path: Optional[str] = None,
         clip_path: Optional[str] = None,
         progress_callback: Optional[Callable[[str, float], None]] = None,
+        enable_compile: bool = False,
     ) -> bool:
         """
         Load a Stable Diffusion model.
@@ -108,10 +123,12 @@ class DiffusersBackend:
             vae_path: Optional path to separate VAE
             clip_path: Optional path to separate CLIP (not commonly used)
             progress_callback: Callback for progress updates (message, progress 0-1)
+            enable_compile: Whether to enable torch.compile optimization
 
         Returns:
             True if loading succeeded
         """
+        self._enable_compile = enable_compile
         try:
             if progress_callback:
                 progress_callback("Preparing to load model...", 0.0)
@@ -260,33 +277,163 @@ class DiffusersBackend:
             return False
 
     def _enable_optimizations(self) -> None:
-        """Enable memory optimizations for the pipeline."""
+        """Enable performance optimizations for the pipeline."""
         if self._pipeline is None:
             return
 
+        # Enable CUDA optimizations
+        if torch.cuda.is_available():
+            # Enable cuDNN benchmark for faster convolutions
+            torch.backends.cudnn.benchmark = True
+            # Enable TF32 for faster matrix operations on Ampere+ GPUs
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            print("Enabled CUDA optimizations (cuDNN benchmark, TF32)")
+
+        # Try to enable xformers memory efficient attention (fastest option)
+        xformers_enabled = False
         try:
-            # Enable attention slicing for lower memory
-            self._pipeline.enable_attention_slicing(1)
+            self._pipeline.enable_xformers_memory_efficient_attention()
+            xformers_enabled = True
+            print("Enabled xformers memory efficient attention")
+        except Exception as e:
+            print(f"xformers not available: {e}")
+
+        # If xformers not available, try PyTorch 2.0 SDPA
+        if not xformers_enabled:
+            try:
+                from diffusers.models.attention_processor import AttnProcessor2_0
+                self._pipeline.unet.set_attn_processor(AttnProcessor2_0())
+                print("Enabled PyTorch 2.0 SDPA attention")
+            except Exception as e:
+                print(f"Could not enable SDPA: {e}")
+
+        # DISABLE memory optimizations that slow down generation
+        # These trade speed for memory - we want speed
+        try:
+            self._pipeline.disable_attention_slicing()
+            print("Disabled attention slicing (for speed)")
         except Exception:
             pass
 
         try:
-            # Enable VAE slicing (use new API)
-            if hasattr(self._pipeline.vae, 'enable_slicing'):
-                self._pipeline.vae.enable_slicing()
-            else:
-                self._pipeline.enable_vae_slicing()
+            if hasattr(self._pipeline.vae, 'disable_slicing'):
+                self._pipeline.vae.disable_slicing()
+            if hasattr(self._pipeline.vae, 'disable_tiling'):
+                self._pipeline.vae.disable_tiling()
+            print("Disabled VAE slicing/tiling (for speed)")
         except Exception:
             pass
 
+        # Set UNet and VAE to channels_last memory format for better GPU performance
         try:
-            # Enable VAE tiling for large images (use new API)
-            if hasattr(self._pipeline.vae, 'enable_tiling'):
-                self._pipeline.vae.enable_tiling()
-            else:
-                self._pipeline.enable_vae_tiling()
+            self._pipeline.unet.to(memory_format=torch.channels_last)
+            print("Enabled channels_last memory format for UNet")
+        except Exception as e:
+            print(f"Could not set channels_last: {e}")
+
+        # Fuse QKV projections for faster attention (if supported)
+        try:
+            self._pipeline.fuse_qkv_projections()
+            print("Fused QKV projections")
         except Exception:
             pass
+
+        # Try torch.compile for additional speedup (PyTorch 2.0+)
+        # Note: First run will be slower due to compilation
+        # Can be disabled with AIIG_DISABLE_COMPILE=1 environment variable or UI checkbox
+        self._torch_compile_enabled = False
+        self._compiled_warmed_up = False
+
+        if DISABLE_TORCH_COMPILE:
+            print("torch.compile disabled via AIIG_DISABLE_COMPILE environment variable")
+        elif not self._enable_compile:
+            print("torch.compile disabled via UI setting")
+        else:
+            try:
+                if hasattr(torch, 'compile'):
+                    # Compile UNet
+                    self._pipeline.unet = torch.compile(
+                        self._pipeline.unet,
+                        mode="reduce-overhead",
+                        fullgraph=False,  # More compatible
+                    )
+                    # Also compile VAE decoder for faster latent-to-image conversion
+                    self._pipeline.vae.decode = torch.compile(
+                        self._pipeline.vae.decode,
+                        mode="reduce-overhead",
+                        fullgraph=False,
+                    )
+                    self._torch_compile_enabled = True
+                    print("Enabled torch.compile for UNet and VAE (warm-up required)")
+            except Exception as e:
+                print(f"Could not enable torch.compile: {e}")
+
+    def warm_up(
+        self,
+        progress_callback: Optional[Callable[[str, float], None]] = None,
+    ) -> None:
+        """
+        Perform a warm-up generation to trigger torch.compile compilation.
+        This should be called after loading models for faster first real generation.
+        """
+        if not self.is_loaded:
+            return
+
+        if self._compiled_warmed_up or not self._torch_compile_enabled:
+            # Already warmed up or torch.compile not enabled
+            if progress_callback:
+                progress_callback("Ready", 1.0)
+            return
+
+        try:
+            if progress_callback:
+                progress_callback("Compiling model (one-time)...", 0.1)
+
+            print("Starting torch.compile warm-up...")
+
+            # Do a small dummy generation to trigger compilation
+            # Use small size to minimize warm-up time
+            warm_up_size = 512 if self._is_sdxl else 256
+
+            with torch.no_grad():
+                if progress_callback:
+                    progress_callback("Compiling UNet (one-time)...", 0.3)
+
+                # Run a single step generation to trigger UNet compilation
+                latents = self._pipeline(
+                    prompt="warm up",
+                    negative_prompt="",
+                    width=warm_up_size,
+                    height=warm_up_size,
+                    num_inference_steps=1,
+                    guidance_scale=1.0,
+                    output_type="latent",  # Get latents first
+                ).images
+
+                if progress_callback:
+                    progress_callback("Compiling VAE decoder (one-time)...", 0.7)
+
+                # Trigger VAE compilation by decoding the latents
+                _ = self._pipeline.vae.decode(latents / self._pipeline.vae.config.scaling_factor, return_dict=False)[0]
+
+            self._compiled_warmed_up = True
+
+            if progress_callback:
+                progress_callback("Model compiled and ready", 1.0)
+
+            print("torch.compile warm-up complete")
+
+        except Exception as e:
+            print(f"Warm-up failed (non-critical): {e}")
+            self._compiled_warmed_up = True  # Don't retry
+            if progress_callback:
+                progress_callback("Ready", 1.0)
+
+    @property
+    def needs_warmup(self) -> bool:
+        """Check if warm-up is needed."""
+        return self._torch_compile_enabled and not self._compiled_warmed_up
 
     def unload_model(self) -> None:
         """Unload the current model and free VRAM."""
@@ -306,12 +453,21 @@ class DiffusersBackend:
         self._loaded_vae = None
         self._is_sdxl = False
         self._loaded_loras = []
+        self._torch_compile_enabled = False
+        self._compiled_warmed_up = False
+        self._enable_compile = False
 
         # Force garbage collection and CUDA cache clear
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
+
+        # Reset torch compile cache to help with cleanup
+        try:
+            torch._dynamo.reset()
+        except Exception:
+            pass
 
     def load_loras(
         self,
@@ -479,24 +635,23 @@ class DiffusersBackend:
             # Set up scheduler
             self._pipeline.scheduler = self._get_scheduler(params.sampler)
 
-            # Handle seed - use the device where UNet is located
+            # Handle seed - use CPU generator for reliability and to avoid CUDA sync overhead
             if params.seed == -1:
                 generator = None  # Random seed
             else:
-                # Use the device where UNet is (that's where latents are generated)
-                gen_device = self._device
-                print(f"Creating generator on device: {gen_device}")
-                generator = torch.Generator(device=gen_device).manual_seed(params.seed)
+                generator = torch.Generator(device="cpu").manual_seed(params.seed)
 
-            # Create progress callback wrapper
-            def callback_on_step_end(pipeline, step, timestep, callback_kwargs):
-                if progress_callback:
+            # Create progress callback wrapper (only if callback provided)
+            callback_fn = None
+            if progress_callback:
+                def callback_on_step_end(pipeline, step, timestep, callback_kwargs):
                     progress_callback(step + 1, params.steps)
-                return callback_kwargs
+                    return callback_kwargs
+                callback_fn = callback_on_step_end
 
             print(f"Starting generation: {params.width}x{params.height}, {params.steps} steps")
 
-            # Generate image
+            # Generate image (first run may be slower due to CUDA kernel initialization)
             result = self._pipeline(
                 prompt=params.prompt,
                 negative_prompt=params.negative_prompt if params.negative_prompt else None,
@@ -505,7 +660,7 @@ class DiffusersBackend:
                 num_inference_steps=params.steps,
                 guidance_scale=params.cfg_scale,
                 generator=generator,
-                callback_on_step_end=callback_on_step_end,
+                callback_on_step_end=callback_fn,
             )
 
             print("Generation complete")
@@ -547,22 +702,22 @@ class DiffusersBackend:
             # Set up scheduler
             self._img2img_pipeline.scheduler = self._get_scheduler(params.sampler)
 
-            # Handle seed
+            # Handle seed - use CPU generator for reliability
             if params.seed == -1:
                 generator = None
             else:
-                gen_device = self._device
-                print(f"Creating generator on device: {gen_device}")
-                generator = torch.Generator(device=gen_device).manual_seed(params.seed)
+                generator = torch.Generator(device="cpu").manual_seed(params.seed)
 
             # Calculate effective steps (img2img uses fewer steps based on strength)
             effective_steps = max(1, int(params.steps * strength))
 
-            # Create progress callback wrapper
-            def callback_on_step_end(pipeline, step, timestep, callback_kwargs):
-                if progress_callback:
+            # Create progress callback wrapper (only if callback provided)
+            callback_fn = None
+            if progress_callback:
+                def callback_on_step_end(pipeline, step, timestep, callback_kwargs):
                     progress_callback(step + 1, effective_steps)
-                return callback_kwargs
+                    return callback_kwargs
+                callback_fn = callback_on_step_end
 
             print(f"Starting img2img: {input_image.width}x{input_image.height} -> {params.width}x{params.height}, strength={strength}, {params.steps} steps")
 
@@ -580,7 +735,7 @@ class DiffusersBackend:
                 num_inference_steps=params.steps,
                 guidance_scale=params.cfg_scale,
                 generator=generator,
-                callback_on_step_end=callback_on_step_end,
+                callback_on_step_end=callback_fn,
             )
 
             print("Img2img generation complete")
@@ -624,22 +779,22 @@ class DiffusersBackend:
             # Set up scheduler
             self._inpaint_pipeline.scheduler = self._get_scheduler(params.sampler)
 
-            # Handle seed
+            # Handle seed - use CPU generator for reliability
             if params.seed == -1:
                 generator = None
             else:
-                gen_device = self._device
-                print(f"Creating generator on device: {gen_device}")
-                generator = torch.Generator(device=gen_device).manual_seed(params.seed)
+                generator = torch.Generator(device="cpu").manual_seed(params.seed)
 
             # Calculate effective steps
             effective_steps = max(1, int(params.steps * strength))
 
-            # Create progress callback wrapper
-            def callback_on_step_end(pipeline, step, timestep, callback_kwargs):
-                if progress_callback:
+            # Create progress callback wrapper (only if callback provided)
+            callback_fn = None
+            if progress_callback:
+                def callback_on_step_end(pipeline, step, timestep, callback_kwargs):
                     progress_callback(step + 1, effective_steps)
-                return callback_kwargs
+                    return callback_kwargs
+                callback_fn = callback_on_step_end
 
             # For inpainting, use the original image dimensions (not params dimensions)
             target_width = input_image.width
@@ -672,7 +827,7 @@ class DiffusersBackend:
                 num_inference_steps=params.steps,
                 guidance_scale=params.cfg_scale,
                 generator=generator,
-                callback_on_step_end=callback_on_step_end,
+                callback_on_step_end=callback_fn,
             )
 
             print("Inpaint generation complete")

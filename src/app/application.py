@@ -54,8 +54,31 @@ class AIImageGeneratorApp(Gtk.Application):
 
     def do_shutdown(self):
         """Called when the application shuts down."""
+        # Cleanup diffusers backend (unload models, clear CUDA cache)
+        try:
+            from src.backends.diffusers_backend import diffusers_backend
+            diffusers_backend.unload_model()
+        except Exception as e:
+            print(f"Error unloading diffusers model: {e}")
+
+        # Cleanup upscale backend
+        try:
+            from src.backends.upscale_backend import upscale_backend
+            upscale_backend.unload_model()
+        except Exception as e:
+            print(f"Error unloading upscale model: {e}")
+
         # Cleanup GPU manager
         gpu_manager.shutdown()
+
+        # Final CUDA cleanup
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        except Exception:
+            pass
 
         Gtk.Application.do_shutdown(self)
 

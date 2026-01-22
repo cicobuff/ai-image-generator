@@ -313,9 +313,11 @@ class Toolbar(Gtk.Box):
     def _update_generation_buttons_sensitivity(self):
         """Update sensitivity of all generation-related buttons based on model loaded state."""
         loaded = self._model_loaded
-        self._generate_button.set_sensitive(loaded)
-        self._img2img_button.set_sensitive(loaded)
-        self._generate_inpaint_button.set_sensitive(loaded)
+        # Generate buttons are always active - they will auto-load models if needed
+        self._generate_button.set_sensitive(True)
+        self._img2img_button.set_sensitive(True)
+        self._generate_inpaint_button.set_sensitive(True)
+        # Clear and inpaint toggle only make sense when model is loaded
         self._clear_button.set_sensitive(loaded)
         self._inpaint_toggle.set_sensitive(loaded)
 
