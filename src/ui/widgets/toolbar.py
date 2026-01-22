@@ -45,9 +45,11 @@ class Toolbar(Gtk.Box):
 
         self._inpaint_mode = False
         self._current_tool = InpaintTool.NONE
+        self._model_loaded = False
 
         self.add_css_class("toolbar")
         self._build_ui()
+        self._update_generation_buttons_sensitivity()
 
     def _build_ui(self):
         """Build the toolbar UI."""
@@ -235,10 +237,8 @@ class Toolbar(Gtk.Box):
         """Update toolbar state based on generation state."""
         if state == GenerationState.IDLE:
             self._load_button.set_sensitive(True)
-            self._clear_button.set_sensitive(True)
-            self._generate_button.set_sensitive(True)
-            self._img2img_button.set_sensitive(True)
-            self._inpaint_toggle.set_sensitive(True)
+            # Restore generation button sensitivity based on model loaded state
+            self._update_generation_buttons_sensitivity()
             self._cancel_button.set_visible(False)
             self._progress_bar.set_visible(False)
             # Restore visibility based on inpaint mode
@@ -287,9 +287,17 @@ class Toolbar(Gtk.Box):
 
     def set_model_loaded(self, loaded: bool):
         """Update state based on whether a model is loaded."""
+        self._model_loaded = loaded
+        self._update_generation_buttons_sensitivity()
+
+    def _update_generation_buttons_sensitivity(self):
+        """Update sensitivity of all generation-related buttons based on model loaded state."""
+        loaded = self._model_loaded
         self._generate_button.set_sensitive(loaded)
         self._img2img_button.set_sensitive(loaded)
+        self._generate_inpaint_button.set_sensitive(loaded)
         self._clear_button.set_sensitive(loaded)
+        self._inpaint_toggle.set_sensitive(loaded)
 
     def set_has_image(self, has_image: bool):
         """Update img2img button based on whether there's an image to use."""
