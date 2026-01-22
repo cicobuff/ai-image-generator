@@ -82,6 +82,13 @@ class DiffusersBackend:
         self._device: str = "cuda:0" if torch.cuda.is_available() else "cpu"
         # LoRA tracking
         self._loaded_loras: list[tuple[str, float]] = []  # List of (path, weight) tuples
+        # Prompt embedding cache for faster repeated generations
+        self._cached_prompt: Optional[str] = None
+        self._cached_negative_prompt: Optional[str] = None
+        self._cached_prompt_embeds: Optional[torch.Tensor] = None
+        self._cached_negative_prompt_embeds: Optional[torch.Tensor] = None
+        self._cached_pooled_prompt_embeds: Optional[torch.Tensor] = None  # SDXL only
+        self._cached_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None  # SDXL only
 
     @property
     def is_loaded(self) -> bool:
@@ -360,6 +367,9 @@ class DiffusersBackend:
         self._is_sdxl = False
         self._loaded_loras = []
 
+        # Clear prompt embedding cache
+        self._clear_prompt_cache()
+
         # Force garbage collection and CUDA cache clear
         gc.collect()
         if torch.cuda.is_available():
@@ -440,6 +450,9 @@ class DiffusersBackend:
                     except Exception:
                         pass
 
+            # Clear prompt cache since LoRAs can affect text encoding
+            self._clear_prompt_cache()
+
             if progress_callback:
                 progress_callback(f"Loaded {len(loras)} LoRA(s)", 1.0)
 
@@ -485,6 +498,9 @@ class DiffusersBackend:
 
         self._loaded_loras = []
 
+        # Clear prompt cache since LoRAs can affect text encoding
+        self._clear_prompt_cache()
+
     @property
     def loaded_loras(self) -> list[tuple[str, float]]:
         """Get list of currently loaded LoRAs as (path, weight) tuples."""
@@ -509,6 +525,76 @@ class DiffusersBackend:
 
         return scheduler_class.from_config(config, **kwargs)
 
+    def _encode_prompts(self, prompt: str, negative_prompt: Optional[str]) -> bool:
+        """
+        Encode prompts and cache the embeddings for reuse.
+        Returns True if new embeddings were computed, False if cache was used.
+        """
+        negative_prompt = negative_prompt or ""
+
+        # Check if we can use cached embeddings
+        if (self._cached_prompt == prompt and
+            self._cached_negative_prompt == negative_prompt and
+            self._cached_prompt_embeds is not None):
+            print("Using cached prompt embeddings")
+            return False
+
+        print("Encoding prompts...")
+
+        try:
+            if self._is_sdxl:
+                # SDXL uses dual text encoders
+                (
+                    self._cached_prompt_embeds,
+                    self._cached_negative_prompt_embeds,
+                    self._cached_pooled_prompt_embeds,
+                    self._cached_negative_pooled_prompt_embeds,
+                ) = self._pipeline.encode_prompt(
+                    prompt=prompt,
+                    prompt_2=None,
+                    device=self._device,
+                    num_images_per_prompt=1,
+                    do_classifier_free_guidance=True,
+                    negative_prompt=negative_prompt,
+                    negative_prompt_2=None,
+                )
+            else:
+                # SD 1.5 uses single text encoder
+                # encode_prompt returns (prompt_embeds, negative_prompt_embeds) when do_classifier_free_guidance=True
+                prompt_embeds, negative_prompt_embeds = self._pipeline.encode_prompt(
+                    prompt=prompt,
+                    device=self._device,
+                    num_images_per_prompt=1,
+                    do_classifier_free_guidance=True,
+                    negative_prompt=negative_prompt,
+                )
+                self._cached_prompt_embeds = prompt_embeds
+                self._cached_negative_prompt_embeds = negative_prompt_embeds
+                self._cached_pooled_prompt_embeds = None
+                self._cached_negative_pooled_prompt_embeds = None
+
+            # Store the prompts we encoded
+            self._cached_prompt = prompt
+            self._cached_negative_prompt = negative_prompt
+
+            print("Prompt encoding complete")
+            return True
+
+        except Exception as e:
+            print(f"Error encoding prompts: {e}")
+            # Clear cache on error
+            self._clear_prompt_cache()
+            raise
+
+    def _clear_prompt_cache(self) -> None:
+        """Clear the cached prompt embeddings."""
+        self._cached_prompt = None
+        self._cached_negative_prompt = None
+        self._cached_prompt_embeds = None
+        self._cached_negative_prompt_embeds = None
+        self._cached_pooled_prompt_embeds = None
+        self._cached_negative_pooled_prompt_embeds = None
+
     def generate(
         self,
         params: GenerationParams,
@@ -532,6 +618,9 @@ class DiffusersBackend:
             # Set up scheduler
             self._pipeline.scheduler = self._get_scheduler(params.sampler)
 
+            # Encode prompts (uses cache if prompts haven't changed)
+            self._encode_prompts(params.prompt, params.negative_prompt)
+
             # Handle seed - use CPU generator for reliability and to avoid CUDA sync overhead
             if params.seed == -1:
                 generator = None  # Random seed
@@ -548,17 +637,29 @@ class DiffusersBackend:
 
             print(f"Starting generation: {params.width}x{params.height}, {params.steps} steps")
 
+            # Build generation kwargs with cached embeddings
+            gen_kwargs = {
+                "width": params.width,
+                "height": params.height,
+                "num_inference_steps": params.steps,
+                "guidance_scale": params.cfg_scale,
+                "generator": generator,
+                "callback_on_step_end": callback_fn,
+            }
+
+            # Use cached embeddings instead of text prompts
+            if self._is_sdxl:
+                gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
+                gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
+                gen_kwargs["pooled_prompt_embeds"] = self._cached_pooled_prompt_embeds
+                gen_kwargs["negative_pooled_prompt_embeds"] = self._cached_negative_pooled_prompt_embeds
+            else:
+                gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
+                if self._cached_negative_prompt_embeds is not None:
+                    gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
+
             # Generate image
-            result = self._pipeline(
-                prompt=params.prompt,
-                negative_prompt=params.negative_prompt if params.negative_prompt else None,
-                width=params.width,
-                height=params.height,
-                num_inference_steps=params.steps,
-                guidance_scale=params.cfg_scale,
-                generator=generator,
-                callback_on_step_end=callback_fn,
-            )
+            result = self._pipeline(**gen_kwargs)
 
             print("Generation complete")
 
@@ -599,6 +700,9 @@ class DiffusersBackend:
             # Set up scheduler
             self._img2img_pipeline.scheduler = self._get_scheduler(params.sampler)
 
+            # Encode prompts (uses cache if prompts haven't changed)
+            self._encode_prompts(params.prompt, params.negative_prompt)
+
             # Handle seed - use CPU generator for reliability
             if params.seed == -1:
                 generator = None
@@ -623,17 +727,29 @@ class DiffusersBackend:
                 input_image = input_image.resize((params.width, params.height), Image.Resampling.LANCZOS)
                 print(f"Resized input image to {params.width}x{params.height}")
 
+            # Build generation kwargs with cached embeddings
+            gen_kwargs = {
+                "image": input_image,
+                "strength": strength,
+                "num_inference_steps": params.steps,
+                "guidance_scale": params.cfg_scale,
+                "generator": generator,
+                "callback_on_step_end": callback_fn,
+            }
+
+            # Use cached embeddings instead of text prompts
+            if self._is_sdxl:
+                gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
+                gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
+                gen_kwargs["pooled_prompt_embeds"] = self._cached_pooled_prompt_embeds
+                gen_kwargs["negative_pooled_prompt_embeds"] = self._cached_negative_pooled_prompt_embeds
+            else:
+                gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
+                if self._cached_negative_prompt_embeds is not None:
+                    gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
+
             # Generate image
-            result = self._img2img_pipeline(
-                prompt=params.prompt,
-                negative_prompt=params.negative_prompt if params.negative_prompt else None,
-                image=input_image,
-                strength=strength,
-                num_inference_steps=params.steps,
-                guidance_scale=params.cfg_scale,
-                generator=generator,
-                callback_on_step_end=callback_fn,
-            )
+            result = self._img2img_pipeline(**gen_kwargs)
 
             print("Img2img generation complete")
 
@@ -676,6 +792,9 @@ class DiffusersBackend:
             # Set up scheduler
             self._inpaint_pipeline.scheduler = self._get_scheduler(params.sampler)
 
+            # Encode prompts (uses cache if prompts haven't changed)
+            self._encode_prompts(params.prompt, params.negative_prompt)
+
             # Handle seed - use CPU generator for reliability
             if params.seed == -1:
                 generator = None
@@ -712,20 +831,32 @@ class DiffusersBackend:
                 mask_image = mask_image.resize(input_image.size, Image.Resampling.LANCZOS)
                 print(f"Resized mask to match input image: {input_image.width}x{input_image.height}")
 
-            # Generate image - explicitly pass dimensions to ensure output matches input
-            result = self._inpaint_pipeline(
-                prompt=params.prompt,
-                negative_prompt=params.negative_prompt if params.negative_prompt else None,
-                image=input_image,
-                mask_image=mask_image,
-                width=target_width,
-                height=target_height,
-                strength=strength,
-                num_inference_steps=params.steps,
-                guidance_scale=params.cfg_scale,
-                generator=generator,
-                callback_on_step_end=callback_fn,
-            )
+            # Build generation kwargs with cached embeddings
+            gen_kwargs = {
+                "image": input_image,
+                "mask_image": mask_image,
+                "width": target_width,
+                "height": target_height,
+                "strength": strength,
+                "num_inference_steps": params.steps,
+                "guidance_scale": params.cfg_scale,
+                "generator": generator,
+                "callback_on_step_end": callback_fn,
+            }
+
+            # Use cached embeddings instead of text prompts
+            if self._is_sdxl:
+                gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
+                gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
+                gen_kwargs["pooled_prompt_embeds"] = self._cached_pooled_prompt_embeds
+                gen_kwargs["negative_pooled_prompt_embeds"] = self._cached_negative_pooled_prompt_embeds
+            else:
+                gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
+                if self._cached_negative_prompt_embeds is not None:
+                    gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
+
+            # Generate image
+            result = self._inpaint_pipeline(**gen_kwargs)
 
             print("Inpaint generation complete")
 
