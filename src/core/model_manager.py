@@ -124,9 +124,16 @@ class ModelManager:
             except Exception as e:
                 print(f"Error in models changed callback: {e}")
 
+    # Directories to scan for each model type
+    CHECKPOINT_DIRS = {"checkpoints", "checkpoint", "stable-diffusion", "sd", "sdxl"}
+    VAE_DIRS = {"vae", "vaes"}
+    CLIP_DIRS = {"clip", "text_encoder", "text_encoders"}
+    UPSCALE_DIRS = {"upscale", "upscalers", "esrgan", "realesrgan"}
+
     def scan_models(self, progress_callback: Optional[Callable[[str], None]] = None) -> None:
         """
         Scan the models directory for available models.
+        Only scans specific subdirectories for supported model types.
 
         Args:
             progress_callback: Optional callback to report scanning progress
@@ -144,27 +151,17 @@ class ModelManager:
             self._notify_models_changed()
             return
 
-        # Scan for all model files (excluding upscale directory for now)
-        model_files = []
-        for ext in MODEL_EXTENSIONS:
-            for path in models_path.rglob(f"*{ext}"):
-                # Skip upscale directory for main models
-                if "upscale" not in str(path.parent).lower():
-                    model_files.append(path)
+        # Scan checkpoints directory and root level
+        self._scan_checkpoints(models_path, progress_callback)
 
-        total = len(model_files)
-        for i, path in enumerate(model_files):
-            if progress_callback:
-                progress_callback(f"Scanning {i + 1}/{total}: {path.name}")
+        # Scan VAE directories
+        self._scan_vae_models(models_path, progress_callback)
 
-            model_info = self._create_model_info(path)
-            if model_info:
-                self._categorize_model(model_info)
+        # Scan CLIP directories
+        self._scan_clip_models(models_path, progress_callback)
 
-        # Scan upscale directory separately
-        upscale_path = models_path / "upscale"
-        if upscale_path.exists():
-            self._scan_upscale_models(upscale_path, progress_callback)
+        # Scan upscale directories
+        self._scan_upscale_models(models_path, progress_callback)
 
         # Sort models by name
         self._checkpoints.sort(key=lambda m: m.name.lower())
@@ -181,87 +178,121 @@ class ModelManager:
 
         self._notify_models_changed()
 
-    def _scan_upscale_models(self, upscale_path: Path, progress_callback: Optional[Callable[[str], None]] = None) -> None:
-        """Scan the upscale directory for upscaler models."""
-        # Upscale models can be .pth, .pt, .safetensors, .bin
-        upscale_extensions = {".pth", ".pt", ".safetensors", ".bin", ".onnx"}
+    def _get_scan_directories(self, models_path: Path, dir_names: set) -> list[Path]:
+        """Get list of directories to scan based on allowed names."""
+        dirs_to_scan = []
+        for item in models_path.iterdir():
+            if item.is_dir() and item.name.lower() in dir_names:
+                dirs_to_scan.append(item)
+        return dirs_to_scan
 
-        for ext in upscale_extensions:
-            for path in upscale_path.rglob(f"*{ext}"):
-                if progress_callback:
-                    progress_callback(f"Scanning upscaler: {path.name}")
+    def _scan_checkpoints(self, models_path: Path, progress_callback: Optional[Callable[[str], None]] = None) -> None:
+        """Scan for checkpoint models in specific directories and root level."""
+        model_files = []
 
-                try:
-                    size = path.stat().st_size
+        # Scan root level for checkpoints (files directly in models/)
+        for ext in MODEL_EXTENSIONS:
+            for path in models_path.glob(f"*{ext}"):
+                if path.is_file():
+                    model_files.append(path)
+
+        # Scan checkpoint-specific subdirectories
+        for subdir in self._get_scan_directories(models_path, self.CHECKPOINT_DIRS):
+            for ext in MODEL_EXTENSIONS:
+                for path in subdir.rglob(f"*{ext}"):
+                    model_files.append(path)
+
+        total = len(model_files)
+        for i, path in enumerate(model_files):
+            if progress_callback:
+                progress_callback(f"Scanning checkpoint {i + 1}/{total}: {path.name}")
+
+            try:
+                components = model_inspector.inspect(path)
+                size = path.stat().st_size
+
+                # Only add if it looks like a checkpoint (has unet)
+                if components.has_unet:
                     model_info = ModelInfo(
                         path=path,
                         name=path.stem,
-                        model_type=ModelType.UPSCALE,
-                        components=ModelComponents(),
+                        model_type=ModelType.CHECKPOINT,
+                        components=components,
                         size_bytes=size,
                     )
-                    self._upscalers.append(model_info)
-                except Exception as e:
-                    print(f"Error scanning upscale model {path}: {e}")
+                    self._checkpoints.append(model_info)
+            except Exception as e:
+                print(f"Error scanning checkpoint {path}: {e}")
 
-    def _create_model_info(self, path: Path) -> Optional[ModelInfo]:
-        """Create ModelInfo for a file path."""
-        try:
-            components = model_inspector.inspect(path)
-            size = path.stat().st_size
+    def _scan_vae_models(self, models_path: Path, progress_callback: Optional[Callable[[str], None]] = None) -> None:
+        """Scan for VAE models in specific directories."""
+        for subdir in self._get_scan_directories(models_path, self.VAE_DIRS):
+            for ext in MODEL_EXTENSIONS:
+                for path in subdir.rglob(f"*{ext}"):
+                    if progress_callback:
+                        progress_callback(f"Scanning VAE: {path.name}")
 
-            # Determine model type from path or components
-            model_type = self._determine_model_type(path, components)
+                    try:
+                        components = model_inspector.inspect(path)
+                        size = path.stat().st_size
 
-            return ModelInfo(
-                path=path,
-                name=path.stem,
-                model_type=model_type,
-                components=components,
-                size_bytes=size,
-            )
-        except Exception as e:
-            print(f"Error creating model info for {path}: {e}")
-            return None
+                        model_info = ModelInfo(
+                            path=path,
+                            name=path.stem,
+                            model_type=ModelType.VAE,
+                            components=components,
+                            size_bytes=size,
+                        )
+                        self._vaes.append(model_info)
+                    except Exception as e:
+                        print(f"Error scanning VAE {path}: {e}")
 
-    def _determine_model_type(self, path: Path, components: ModelComponents) -> ModelType:
-        """Determine the type of model from path and components."""
-        name_lower = path.stem.lower()
-        parent_lower = path.parent.name.lower()
+    def _scan_clip_models(self, models_path: Path, progress_callback: Optional[Callable[[str], None]] = None) -> None:
+        """Scan for CLIP/text encoder models in specific directories."""
+        for subdir in self._get_scan_directories(models_path, self.CLIP_DIRS):
+            for ext in MODEL_EXTENSIONS:
+                for path in subdir.rglob(f"*{ext}"):
+                    if progress_callback:
+                        progress_callback(f"Scanning CLIP: {path.name}")
 
-        # Check parent directory name
-        if "vae" in parent_lower:
-            return ModelType.VAE
-        if "clip" in parent_lower or "text_encoder" in parent_lower:
-            return ModelType.CLIP
+                    try:
+                        components = model_inspector.inspect(path)
+                        size = path.stat().st_size
 
-        # Check filename
-        if "vae" in name_lower and not components.has_unet:
-            return ModelType.VAE
-        if ("clip" in name_lower or "text_encoder" in name_lower) and not components.has_unet:
-            return ModelType.CLIP
+                        model_info = ModelInfo(
+                            path=path,
+                            name=path.stem,
+                            model_type=ModelType.CLIP,
+                            components=components,
+                            size_bytes=size,
+                        )
+                        self._clips.append(model_info)
+                    except Exception as e:
+                        print(f"Error scanning CLIP {path}: {e}")
 
-        # Check components
-        if components.has_unet:
-            return ModelType.CHECKPOINT
-        if components.has_vae and not components.has_unet:
-            return ModelType.VAE
-        if components.has_text_encoder and not components.has_unet:
-            return ModelType.CLIP
+    def _scan_upscale_models(self, models_path: Path, progress_callback: Optional[Callable[[str], None]] = None) -> None:
+        """Scan for upscaler models in specific directories."""
+        # Upscale models can be .pth, .pt, .safetensors, .bin, .onnx
+        upscale_extensions = {".pth", ".pt", ".safetensors", ".bin", ".onnx"}
 
-        # Default to checkpoint if unclear
-        return ModelType.CHECKPOINT
+        for subdir in self._get_scan_directories(models_path, self.UPSCALE_DIRS):
+            for ext in upscale_extensions:
+                for path in subdir.rglob(f"*{ext}"):
+                    if progress_callback:
+                        progress_callback(f"Scanning upscaler: {path.name}")
 
-    def _categorize_model(self, model: ModelInfo) -> None:
-        """Add model to the appropriate category list."""
-        if model.model_type == ModelType.CHECKPOINT:
-            self._checkpoints.append(model)
-        elif model.model_type == ModelType.VAE:
-            self._vaes.append(model)
-        elif model.model_type == ModelType.CLIP:
-            self._clips.append(model)
-        elif model.model_type == ModelType.UPSCALE:
-            self._upscalers.append(model)
+                    try:
+                        size = path.stat().st_size
+                        model_info = ModelInfo(
+                            path=path,
+                            name=path.stem,
+                            model_type=ModelType.UPSCALE,
+                            components=ModelComponents(),
+                            size_bytes=size,
+                        )
+                        self._upscalers.append(model_info)
+                    except Exception as e:
+                        print(f"Error scanning upscale model {path}: {e}")
 
     def select_checkpoint(self, model: Optional[ModelInfo]) -> None:
         """Select a checkpoint model for loading."""
