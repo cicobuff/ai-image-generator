@@ -149,3 +149,11 @@ class ImageDisplayFrame(Gtk.Frame):
     def clear(self):
         """Clear the image."""
         self._display.clear()
+
+    def get_pil_image(self) -> Optional[Image.Image]:
+        """Get the current PIL image."""
+        return self._display.get_pil_image()
+
+    def has_image(self) -> bool:
+        """Check if an image is currently loaded."""
+        return self._display.has_image()

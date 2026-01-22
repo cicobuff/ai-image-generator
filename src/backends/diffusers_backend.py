@@ -9,7 +9,9 @@ import torch
 from PIL import Image
 from diffusers import (
     StableDiffusionXLPipeline,
+    StableDiffusionXLImg2ImgPipeline,
     StableDiffusionPipeline,
+    StableDiffusionImg2ImgPipeline,
     AutoencoderKL,
     EulerDiscreteScheduler,
     EulerAncestralDiscreteScheduler,
@@ -63,6 +65,7 @@ class DiffusersBackend:
 
     def __init__(self):
         self._pipeline: Optional[Any] = None
+        self._img2img_pipeline: Optional[Any] = None
         self._is_sdxl: bool = False
         self._loaded_checkpoint: Optional[str] = None
         self._loaded_vae: Optional[str] = None
@@ -167,6 +170,31 @@ class DiffusersBackend:
                 self._pipeline.vae = vae.to(self._pipeline.device)
 
             if progress_callback:
+                progress_callback("Creating img2img pipeline...", 0.7)
+
+            # Create img2img pipeline from the same components
+            img2img_class = StableDiffusionXLImg2ImgPipeline if self._is_sdxl else StableDiffusionImg2ImgPipeline
+            self._img2img_pipeline = img2img_class(
+                vae=self._pipeline.vae,
+                text_encoder=self._pipeline.text_encoder,
+                text_encoder_2=self._pipeline.text_encoder_2 if self._is_sdxl else None,
+                tokenizer=self._pipeline.tokenizer,
+                tokenizer_2=self._pipeline.tokenizer_2 if self._is_sdxl else None,
+                unet=self._pipeline.unet,
+                scheduler=self._pipeline.scheduler,
+            ) if self._is_sdxl else img2img_class(
+                vae=self._pipeline.vae,
+                text_encoder=self._pipeline.text_encoder,
+                tokenizer=self._pipeline.tokenizer,
+                unet=self._pipeline.unet,
+                scheduler=self._pipeline.scheduler,
+                safety_checker=None,
+                feature_extractor=None,
+                requires_safety_checker=False,
+            )
+            print("Img2img pipeline created")
+
+            if progress_callback:
                 progress_callback("Optimizing model...", 0.8)
 
             # Enable optimizations
@@ -232,6 +260,10 @@ class DiffusersBackend:
         if self._pipeline is not None:
             del self._pipeline
             self._pipeline = None
+
+        if self._img2img_pipeline is not None:
+            del self._img2img_pipeline
+            self._img2img_pipeline = None
 
         self._loaded_checkpoint = None
         self._loaded_vae = None
@@ -323,6 +355,81 @@ class DiffusersBackend:
         except Exception as e:
             import traceback
             print(f"Error during generation: {e}")
+            traceback.print_exc()
+            return None
+
+    def generate_img2img(
+        self,
+        params: GenerationParams,
+        input_image: Image.Image,
+        strength: float = 0.75,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Optional[Image.Image]:
+        """
+        Generate an image using img2img with the loaded model.
+
+        Args:
+            params: Generation parameters
+            input_image: Input image to transform
+            strength: How much to transform (0=no change, 1=full generation)
+            progress_callback: Callback for step progress (current_step, total_steps)
+
+        Returns:
+            Generated PIL Image or None if generation failed
+        """
+        if not self.is_loaded or self._img2img_pipeline is None:
+            print("No model loaded for img2img")
+            return None
+
+        try:
+            # Set up scheduler
+            self._img2img_pipeline.scheduler = self._get_scheduler(params.sampler)
+
+            # Handle seed
+            if params.seed == -1:
+                generator = None
+            else:
+                gen_device = self._device
+                print(f"Creating generator on device: {gen_device}")
+                generator = torch.Generator(device=gen_device).manual_seed(params.seed)
+
+            # Calculate effective steps (img2img uses fewer steps based on strength)
+            effective_steps = max(1, int(params.steps * strength))
+
+            # Create progress callback wrapper
+            def callback_on_step_end(pipeline, step, timestep, callback_kwargs):
+                if progress_callback:
+                    progress_callback(step + 1, effective_steps)
+                return callback_kwargs
+
+            print(f"Starting img2img: {input_image.width}x{input_image.height} -> {params.width}x{params.height}, strength={strength}, {params.steps} steps")
+
+            # Resize input image to target size if needed
+            if input_image.width != params.width or input_image.height != params.height:
+                input_image = input_image.resize((params.width, params.height), Image.Resampling.LANCZOS)
+                print(f"Resized input image to {params.width}x{params.height}")
+
+            # Generate image
+            result = self._img2img_pipeline(
+                prompt=params.prompt,
+                negative_prompt=params.negative_prompt if params.negative_prompt else None,
+                image=input_image,
+                strength=strength,
+                num_inference_steps=params.steps,
+                guidance_scale=params.cfg_scale,
+                generator=generator,
+                callback_on_step_end=callback_on_step_end,
+            )
+
+            print("Img2img generation complete")
+
+            if result.images:
+                return result.images[0]
+            return None
+
+        except Exception as e:
+            import traceback
+            print(f"Error during img2img generation: {e}")
             traceback.print_exc()
             return None
 

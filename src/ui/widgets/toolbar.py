@@ -17,12 +17,14 @@ class Toolbar(Gtk.Box):
         on_load: Optional[Callable[[], None]] = None,
         on_clear: Optional[Callable[[], None]] = None,
         on_generate: Optional[Callable[[], None]] = None,
+        on_img2img: Optional[Callable[[], None]] = None,
         on_cancel: Optional[Callable[[], None]] = None,
     ):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self._on_load = on_load
         self._on_clear = on_clear
         self._on_generate = on_generate
+        self._on_img2img = on_img2img
         self._on_cancel = on_cancel
 
         self.add_css_class("toolbar")
@@ -47,10 +49,16 @@ class Toolbar(Gtk.Box):
         self.append(separator)
 
         # Generate button
-        self._generate_button = Gtk.Button(label="Generate Image")
+        self._generate_button = Gtk.Button(label="Generate")
         self._generate_button.add_css_class("suggested-action")
         self._generate_button.connect("clicked", self._on_generate_clicked)
         self.append(self._generate_button)
+
+        # Image to Image button
+        self._img2img_button = Gtk.Button(label="Image to Image")
+        self._img2img_button.set_tooltip_text("Generate a new image based on the current image")
+        self._img2img_button.connect("clicked", self._on_img2img_clicked)
+        self.append(self._img2img_button)
 
         # Cancel button (hidden by default)
         self._cancel_button = Gtk.Button(label="Cancel")
@@ -90,6 +98,11 @@ class Toolbar(Gtk.Box):
         if self._on_generate:
             self._on_generate()
 
+    def _on_img2img_clicked(self, button):
+        """Handle Image to Image button click."""
+        if self._on_img2img:
+            self._on_img2img()
+
     def _on_cancel_clicked(self, button):
         """Handle Cancel button click."""
         if self._on_cancel:
@@ -102,6 +115,8 @@ class Toolbar(Gtk.Box):
             self._clear_button.set_sensitive(True)
             self._generate_button.set_sensitive(True)
             self._generate_button.set_visible(True)
+            self._img2img_button.set_sensitive(True)
+            self._img2img_button.set_visible(True)
             self._cancel_button.set_visible(False)
             self._progress_bar.set_visible(False)
 
@@ -110,6 +125,8 @@ class Toolbar(Gtk.Box):
             self._clear_button.set_sensitive(False)
             self._generate_button.set_sensitive(False)
             self._generate_button.set_visible(True)
+            self._img2img_button.set_sensitive(False)
+            self._img2img_button.set_visible(True)
             self._cancel_button.set_visible(False)
             self._progress_bar.set_visible(True)
 
@@ -117,6 +134,7 @@ class Toolbar(Gtk.Box):
             self._load_button.set_sensitive(False)
             self._clear_button.set_sensitive(False)
             self._generate_button.set_visible(False)
+            self._img2img_button.set_visible(False)
             self._cancel_button.set_visible(True)
             self._progress_bar.set_visible(True)
 
@@ -124,13 +142,24 @@ class Toolbar(Gtk.Box):
             self._load_button.set_sensitive(False)
             self._clear_button.set_sensitive(False)
             self._generate_button.set_visible(False)
+            self._img2img_button.set_visible(False)
             self._cancel_button.set_sensitive(False)
             self._progress_bar.set_visible(True)
 
     def set_model_loaded(self, loaded: bool):
         """Update state based on whether a model is loaded."""
         self._generate_button.set_sensitive(loaded)
+        self._img2img_button.set_sensitive(loaded)
         self._clear_button.set_sensitive(loaded)
+
+    def set_has_image(self, has_image: bool):
+        """Update img2img button based on whether there's an image to use."""
+        # img2img requires both a loaded model and an image
+        # The model check is handled by set_model_loaded
+        self._img2img_button.set_tooltip_text(
+            "Generate a new image based on the current image" if has_image
+            else "Load an image first to use Image to Image"
+        )
 
     def set_progress(self, message: str, fraction: float):
         """Update progress display."""

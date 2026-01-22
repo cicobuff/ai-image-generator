@@ -38,6 +38,7 @@ class WorkScreen(Gtk.Box):
             on_load=self._on_load_models,
             on_clear=self._on_clear_models,
             on_generate=self._on_generate,
+            on_img2img=self._on_img2img,
             on_cancel=self._on_cancel,
         )
         self.append(self._toolbar)
@@ -283,6 +284,44 @@ class WorkScreen(Gtk.Box):
 
         generation_service.generate(
             params,
+            upscale_enabled=upscale_enabled,
+            upscale_model_path=upscale_model_path,
+            upscale_model_name=upscale_model_name,
+        )
+
+    def _on_img2img(self):
+        """Handle Image to Image button click."""
+        if not generation_service.is_model_loaded:
+            self._status_bar.set_text("Please load models first")
+            return
+
+        # Check if there's an image to use as input
+        input_image = self._image_display.get_pil_image()
+        if input_image is None:
+            self._status_bar.set_text("Please load or generate an image first")
+            return
+
+        positive = self._prompt_panel.get_positive_prompt()
+        if not positive.strip():
+            self._status_bar.set_text("Please enter a positive prompt")
+            return
+
+        negative = self._prompt_panel.get_negative_prompt()
+        params = self._params_widget.get_params(positive, negative)
+        strength = self._params_widget.get_strength()
+
+        # Store whether user wanted random seed
+        self._last_seed_was_random = (params.seed == -1)
+
+        # Get upscale settings
+        upscale_enabled = self._upscale_widget.is_enabled
+        upscale_model_path = self._upscale_widget.selected_model_path
+        upscale_model_name = self._upscale_widget.selected_model_name
+
+        generation_service.generate_img2img(
+            params,
+            input_image=input_image,
+            strength=strength,
             upscale_enabled=upscale_enabled,
             upscale_model_path=upscale_model_path,
             upscale_model_name=upscale_model_name,

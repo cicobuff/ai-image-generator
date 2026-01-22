@@ -38,6 +38,10 @@ class GenerationMetadata:
     original_width: int = 0  # Original size before upscaling
     original_height: int = 0
 
+    # Img2img info
+    is_img2img: bool = False
+    img2img_strength: float = 0.0
+
     def to_json(self) -> str:
         """Convert metadata to JSON string."""
         return json.dumps(asdict(self), indent=2)
@@ -75,6 +79,8 @@ class GenerationMetadata:
         ]
         if self.vae:
             parts.append(f"VAE: {self.vae}")
+        if self.is_img2img:
+            parts.append(f"Img2img strength: {self.img2img_strength}")
         if self.upscale_enabled and self.upscale_model:
             parts.append(f"Upscale: {self.upscale_model} ({self.upscale_factor}x)")
             parts.append(f"Final size: {self.width}x{self.height}")

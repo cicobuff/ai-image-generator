@@ -57,6 +57,9 @@ class GenerationParamsWidget(Gtk.Box):
         # CFG Scale
         self.append(self._create_cfg_section())
 
+        # Strength (for img2img)
+        self.append(self._create_strength_section())
+
         # Seed
         self.append(self._create_seed_section())
 
@@ -153,6 +156,26 @@ class GenerationParamsWidget(Gtk.Box):
         self._cfg_spin.set_value(DEFAULT_CFG_SCALE)
         self._cfg_spin.set_hexpand(True)
         row.append(self._cfg_spin)
+
+        return row
+
+    def _create_strength_section(self) -> Gtk.Widget:
+        """Create strength input section (for img2img)."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        row.add_css_class("param-row")
+
+        label = Gtk.Label(label="Strength:")
+        label.set_size_request(80, -1)
+        label.set_halign(Gtk.Align.START)
+        label.set_tooltip_text("How much to transform the input image (0=no change, 1=full generation)")
+        row.append(label)
+
+        self._strength_spin = Gtk.SpinButton.new_with_range(0.0, 1.0, 0.05)
+        self._strength_spin.set_digits(2)
+        self._strength_spin.set_value(0.75)
+        self._strength_spin.set_hexpand(True)
+        self._strength_spin.set_tooltip_text("Lower values keep more of the original image")
+        row.append(self._strength_spin)
 
         return row
 
@@ -275,6 +298,15 @@ class GenerationParamsWidget(Gtk.Box):
         if sampler in sampler_names:
             self._sampler_dropdown.set_selected(sampler_names.index(sampler))
 
+    def get_strength(self) -> float:
+        """Get the img2img strength value."""
+        return self._strength_spin.get_value()
+
+    def set_strength(self, strength: float):
+        """Set the img2img strength value."""
+        self._strength_spin.set_value(strength)
+
     def reset_to_defaults(self):
         """Reset all parameters to defaults."""
         self._load_defaults()
+        self._strength_spin.set_value(0.75)

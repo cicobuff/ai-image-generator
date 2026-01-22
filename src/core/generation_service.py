@@ -301,6 +301,140 @@ class GenerationService:
         self._current_thread = threading.Thread(target=generate_thread, daemon=True)
         self._current_thread.start()
 
+    def generate_img2img(
+        self,
+        params: GenerationParams,
+        input_image: Image.Image,
+        strength: float = 0.75,
+        upscale_enabled: bool = False,
+        upscale_model_path: Optional[str] = None,
+        upscale_model_name: str = "",
+    ) -> None:
+        """Start img2img generation in background thread.
+
+        Args:
+            params: Generation parameters
+            input_image: Input image to transform
+            strength: How much to transform (0=no change, 1=full generation)
+            upscale_enabled: Whether to upscale the result
+            upscale_model_path: Path to the upscale model
+            upscale_model_name: Name of the upscale model (for metadata)
+        """
+        if self.is_busy:
+            return
+
+        if not self.is_model_loaded:
+            self._notify_generation_complete(
+                GenerationResult(success=False, error="No model loaded")
+            )
+            return
+
+        if input_image is None:
+            self._notify_generation_complete(
+                GenerationResult(success=False, error="No input image provided")
+            )
+            return
+
+        self._cancel_requested = False
+        self._set_state(GenerationState.GENERATING)
+
+        def generate_thread():
+            try:
+                print(f"Img2img generation thread started")
+                # Get actual seed
+                actual_seed = diffusers_backend.get_actual_seed(params)
+                if params.seed == -1:
+                    params.seed = actual_seed
+
+                print(f"Using seed: {params.seed}")
+                self._notify_progress("Generating image (img2img)...", 0.0)
+
+                # Calculate effective steps
+                effective_steps = max(1, int(params.steps * strength))
+                self._notify_step_progress(0, effective_steps)
+
+                # Generate image
+                print(f"Calling diffusers_backend.generate_img2img()")
+                image = diffusers_backend.generate_img2img(
+                    params,
+                    input_image=input_image,
+                    strength=strength,
+                    progress_callback=self._notify_step_progress,
+                )
+                print(f"diffusers_backend.generate_img2img() returned: {image is not None}")
+
+                if self._cancel_requested:
+                    self._notify_generation_complete(
+                        GenerationResult(success=False, error="Generation cancelled")
+                    )
+                    return
+
+                if image is None:
+                    self._notify_generation_complete(
+                        GenerationResult(success=False, error="Img2img generation failed")
+                    )
+                    return
+
+                # Store original size before potential upscaling
+                original_width = image.width
+                original_height = image.height
+                upscale_factor = 1
+
+                # Upscale if enabled
+                if upscale_enabled and upscale_model_path:
+                    self._notify_progress("Loading upscale model...", 0.0)
+
+                    if not upscale_backend.is_loaded or upscale_backend._loaded_model_path != upscale_model_path:
+                        upscale_backend.set_device(diffusers_backend._device)
+                        if not upscale_backend.load_model(upscale_model_path, self._notify_progress):
+                            print("Failed to load upscale model, skipping upscaling")
+                        else:
+                            upscale_factor = upscale_backend.scale
+
+                    if upscale_backend.is_loaded:
+                        self._notify_progress("Upscaling image...", 0.5)
+                        upscaled = upscale_backend.upscale(image, self._notify_progress)
+                        if upscaled:
+                            image = upscaled
+                            upscale_factor = upscale_backend.scale
+                            print(f"Upscaled from {original_width}x{original_height} to {image.width}x{image.height}")
+                        else:
+                            print("Upscaling failed, using original image")
+
+                # Save image with metadata
+                output_path = self._save_image(
+                    image,
+                    params,
+                    upscale_enabled=upscale_enabled and upscale_backend.is_loaded,
+                    upscale_model_name=upscale_model_name,
+                    upscale_factor=upscale_factor,
+                    original_width=original_width,
+                    original_height=original_height,
+                    is_img2img=True,
+                    img2img_strength=strength,
+                )
+
+                self._notify_generation_complete(
+                    GenerationResult(
+                        success=True,
+                        image=image,
+                        path=output_path,
+                        seed=params.seed,
+                    )
+                )
+
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._notify_generation_complete(
+                    GenerationResult(success=False, error=str(e))
+                )
+            finally:
+                self._set_state(GenerationState.IDLE)
+
+        self._current_thread = threading.Thread(target=generate_thread, daemon=True)
+        self._current_thread.start()
+
     def cancel(self) -> None:
         """Request cancellation of current operation."""
         if self._state == GenerationState.GENERATING:
@@ -316,6 +450,8 @@ class GenerationService:
         upscale_factor: int = 1,
         original_width: int = 0,
         original_height: int = 0,
+        is_img2img: bool = False,
+        img2img_strength: float = 0.0,
     ) -> Path:
         """Save generated image to output directory with metadata."""
         output_dir = config_manager.config.get_output_path()
@@ -323,8 +459,9 @@ class GenerationService:
 
         # Generate filename with timestamp and seed
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        img2img_prefix = "img2img_" if is_img2img else "gen_"
         upscale_suffix = f"_upscaled{upscale_factor}x" if upscale_enabled else ""
-        filename = f"gen_{timestamp}_seed{params.seed}{upscale_suffix}.{OUTPUT_FORMAT}"
+        filename = f"{img2img_prefix}{timestamp}_seed{params.seed}{upscale_suffix}.{OUTPUT_FORMAT}"
         output_path = output_dir / filename
 
         # Create metadata
@@ -347,6 +484,8 @@ class GenerationService:
             upscale_factor=upscale_factor,
             original_width=original_width if upscale_enabled else 0,
             original_height=original_height if upscale_enabled else 0,
+            is_img2img=is_img2img,
+            img2img_strength=img2img_strength,
         )
 
         # Save with metadata
