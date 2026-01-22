@@ -1,10 +1,17 @@
 """Diffusers backend for Stable Diffusion image generation."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Callable, Any
 import gc
 import warnings
+
+
+def _log(message: str) -> None:
+    """Print a log message with timestamp."""
+    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    print(f"[{timestamp}] {message}")
 
 import torch
 
@@ -155,10 +162,10 @@ class DiffusersBackend:
 
             # Use first selected GPU (multi-GPU requires more complex setup)
             self._device = f"cuda:{self._gpu_indices[0]}" if torch.cuda.is_available() else "cpu"
-            print(f"Target device: {self._device}")
+            _log(f"Target device: {self._device}")
 
             # Load the pipeline
-            print(f"Loading model from checkpoint...")
+            _log(f"Loading model from checkpoint...")
             self._pipeline = pipeline_class.from_single_file(
                 checkpoint_path,
                 torch_dtype=torch.float16,
@@ -166,25 +173,25 @@ class DiffusersBackend:
             )
 
             # Move all components to the same GPU
-            print(f"Moving pipeline components to {self._device}...")
+            _log(f"Moving pipeline components to {self._device}...")
 
             if hasattr(self._pipeline, 'unet') and self._pipeline.unet is not None:
                 self._pipeline.unet = self._pipeline.unet.to(self._device)
-                print(f"  UNet moved to {self._device}")
+                _log(f"  UNet moved to {self._device}")
 
             if hasattr(self._pipeline, 'vae') and self._pipeline.vae is not None:
                 self._pipeline.vae = self._pipeline.vae.to(self._device)
-                print(f"  VAE moved to {self._device}")
+                _log(f"  VAE moved to {self._device}")
 
             if hasattr(self._pipeline, 'text_encoder') and self._pipeline.text_encoder is not None:
                 self._pipeline.text_encoder = self._pipeline.text_encoder.to(self._device)
-                print(f"  Text encoder moved to {self._device}")
+                _log(f"  Text encoder moved to {self._device}")
 
             if hasattr(self._pipeline, 'text_encoder_2') and self._pipeline.text_encoder_2 is not None:
                 self._pipeline.text_encoder_2 = self._pipeline.text_encoder_2.to(self._device)
-                print(f"  Text encoder 2 moved to {self._device}")
+                _log(f"  Text encoder 2 moved to {self._device}")
 
-            print(f"Pipeline device: {self._pipeline.device}")
+            _log(f"Pipeline device: {self._pipeline.device}")
 
             if progress_callback:
                 progress_callback("Loading VAE...", 0.5)
@@ -220,7 +227,7 @@ class DiffusersBackend:
                 feature_extractor=None,
                 requires_safety_checker=False,
             )
-            print("Img2img pipeline created")
+            _log("Img2img pipeline created")
 
             if progress_callback:
                 progress_callback("Creating inpaint pipeline...", 0.75)
@@ -248,7 +255,7 @@ class DiffusersBackend:
                     feature_extractor=None,
                     requires_safety_checker=False,
                 )
-            print("Inpaint pipeline created")
+            _log("Inpaint pipeline created")
 
             if progress_callback:
                 progress_callback("Optimizing model...", 0.8)
@@ -268,7 +275,7 @@ class DiffusersBackend:
                 if torch.cuda.is_available():
                     allocated = torch.cuda.memory_allocated(i) / (1024**3)
                     reserved = torch.cuda.memory_reserved(i) / (1024**3)
-                    print(f"GPU {i} - Allocated: {allocated:.2f} GB, Reserved: {reserved:.2f} GB")
+                    _log(f"GPU {i} - Allocated: {allocated:.2f} GB, Reserved: {reserved:.2f} GB")
 
             if progress_callback:
                 progress_callback("Model loaded successfully", 1.0)
@@ -276,7 +283,7 @@ class DiffusersBackend:
             return True
 
         except Exception as e:
-            print(f"Error loading model: {e}")
+            _log(f"Error loading model: {e}")
             self.unload_model()
             if progress_callback:
                 progress_callback(f"Error: {e}", 0.0)
@@ -297,31 +304,31 @@ class DiffusersBackend:
             # Enable TF32 for faster matrix operations on Ampere+ GPUs
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
-            print("Enabled CUDA optimizations (cuDNN benchmark, TF32)")
+            _log("Enabled CUDA optimizations (cuDNN benchmark, TF32)")
 
         # Try to enable xformers memory efficient attention (fastest option)
         xformers_enabled = False
         try:
             self._pipeline.enable_xformers_memory_efficient_attention()
             xformers_enabled = True
-            print("Enabled xformers memory efficient attention")
+            _log("Enabled xformers memory efficient attention")
         except Exception as e:
-            print(f"xformers not available: {e}")
+            _log(f"xformers not available: {e}")
 
         # If xformers not available, try PyTorch 2.0 SDPA
         if not xformers_enabled:
             try:
                 from diffusers.models.attention_processor import AttnProcessor2_0
                 self._pipeline.unet.set_attn_processor(AttnProcessor2_0())
-                print("Enabled PyTorch 2.0 SDPA attention")
+                _log("Enabled PyTorch 2.0 SDPA attention")
             except Exception as e:
-                print(f"Could not enable SDPA: {e}")
+                _log(f"Could not enable SDPA: {e}")
 
         # DISABLE memory optimizations that slow down generation
         # These trade speed for memory - we want speed
         try:
             self._pipeline.disable_attention_slicing()
-            print("Disabled attention slicing (for speed)")
+            _log("Disabled attention slicing (for speed)")
         except Exception:
             pass
 
@@ -330,21 +337,21 @@ class DiffusersBackend:
                 self._pipeline.vae.disable_slicing()
             if hasattr(self._pipeline.vae, 'disable_tiling'):
                 self._pipeline.vae.disable_tiling()
-            print("Disabled VAE slicing/tiling (for speed)")
+            _log("Disabled VAE slicing/tiling (for speed)")
         except Exception:
             pass
 
         # Set UNet and VAE to channels_last memory format for better GPU performance
         try:
             self._pipeline.unet.to(memory_format=torch.channels_last)
-            print("Enabled channels_last memory format for UNet")
+            _log("Enabled channels_last memory format for UNet")
         except Exception as e:
-            print(f"Could not set channels_last: {e}")
+            _log(f"Could not set channels_last: {e}")
 
         # Fuse QKV projections for faster attention (if supported)
         try:
             self._pipeline.fuse_qkv_projections()
-            print("Fused QKV projections")
+            _log("Fused QKV projections")
         except Exception:
             pass
 
@@ -392,7 +399,7 @@ class DiffusersBackend:
             True if successful
         """
         if not self.is_loaded:
-            print("Cannot load LoRAs: no model loaded")
+            _log("Cannot load LoRAs: no model loaded")
             return False
 
         if not loras:
@@ -415,7 +422,7 @@ class DiffusersBackend:
                 # Create a unique adapter name based on the LoRA file name
                 adapter_name = f"lora_{i}_{Path(lora_path).stem}"
 
-                print(f"Loading LoRA: {lora_name} (weight: {weight}) from {lora_path}")
+                _log(f"Loading LoRA: {lora_name} (weight: {weight}) from {lora_path}")
 
                 # Load the LoRA weights
                 self._pipeline.load_lora_weights(
@@ -456,11 +463,11 @@ class DiffusersBackend:
             if progress_callback:
                 progress_callback(f"Loaded {len(loras)} LoRA(s)", 1.0)
 
-            print(f"Successfully loaded {len(loras)} LoRA(s)")
+            _log(f"Successfully loaded {len(loras)} LoRA(s)")
             return True
 
         except Exception as e:
-            print(f"Error loading LoRAs: {e}")
+            _log(f"Error loading LoRAs: {e}")
             import traceback
             traceback.print_exc()
             # Try to unload any partially loaded LoRAs
@@ -490,11 +497,11 @@ class DiffusersBackend:
                     pass
 
             if notify:
-                print("Unloaded all LoRAs")
+                _log("Unloaded all LoRAs")
         except Exception as e:
             # This can happen if no LoRAs were ever loaded, which is fine
             if "PEFT" not in str(e):
-                print(f"Error unloading LoRAs: {e}")
+                _log(f"Error unloading LoRAs: {e}")
 
         self._loaded_loras = []
 
@@ -536,10 +543,10 @@ class DiffusersBackend:
         if (self._cached_prompt == prompt and
             self._cached_negative_prompt == negative_prompt and
             self._cached_prompt_embeds is not None):
-            print("Using cached prompt embeddings")
+            _log("Using cached prompt embeddings")
             return False
 
-        print("Encoding prompts...")
+        _log("Encoding prompts...")
 
         try:
             if self._is_sdxl:
@@ -577,11 +584,11 @@ class DiffusersBackend:
             self._cached_prompt = prompt
             self._cached_negative_prompt = negative_prompt
 
-            print("Prompt encoding complete")
+            _log("Prompt encoding complete")
             return True
 
         except Exception as e:
-            print(f"Error encoding prompts: {e}")
+            _log(f"Error encoding prompts: {e}")
             # Clear cache on error
             self._clear_prompt_cache()
             raise
@@ -611,7 +618,7 @@ class DiffusersBackend:
             Generated PIL Image or None if generation failed
         """
         if not self.is_loaded:
-            print("No model loaded")
+            _log("No model loaded")
             return None
 
         try:
@@ -628,12 +635,17 @@ class DiffusersBackend:
                 actual_seed = params.seed
             generator = torch.Generator(device="cpu").manual_seed(actual_seed)
 
-            print(f"Starting generation: {params.width}x{params.height}, {params.steps} steps (seed: {actual_seed})")
+            _log(f"Starting generation: {params.width}x{params.height}, {params.steps} steps (seed: {actual_seed})")
 
             # Create progress callback wrapper
             callback_fn = None
+            first_step_logged = False
             if progress_callback:
                 def callback_on_step_end(pipeline, step, timestep, callback_kwargs):
+                    nonlocal first_step_logged
+                    if not first_step_logged:
+                        _log(f"First step complete (step {step + 1})")
+                        first_step_logged = True
                     progress_callback(step + 1, params.steps)
                     return callback_kwargs
                 callback_fn = callback_on_step_end
@@ -660,9 +672,10 @@ class DiffusersBackend:
                     gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
 
             # Generate image
+            _log("Calling pipeline...")
             result = self._pipeline(**gen_kwargs)
 
-            print("Generation complete")
+            _log("Generation complete")
 
             if result.images:
                 return result.images[0]
@@ -670,7 +683,7 @@ class DiffusersBackend:
 
         except Exception as e:
             import traceback
-            print(f"Error during generation: {e}")
+            _log(f"Error during generation: {e}")
             traceback.print_exc()
             return None
 
@@ -694,7 +707,7 @@ class DiffusersBackend:
             Generated PIL Image or None if generation failed
         """
         if not self.is_loaded or self._img2img_pipeline is None:
-            print("No model loaded for img2img")
+            _log("No model loaded for img2img")
             return None
 
         try:
@@ -721,12 +734,12 @@ class DiffusersBackend:
                     return callback_kwargs
                 callback_fn = callback_on_step_end
 
-            print(f"Starting img2img: {input_image.width}x{input_image.height} -> {params.width}x{params.height}, strength={strength}, {params.steps} steps")
+            _log(f"Starting img2img: {input_image.width}x{input_image.height} -> {params.width}x{params.height}, strength={strength}, {params.steps} steps")
 
             # Resize input image to target size if needed
             if input_image.width != params.width or input_image.height != params.height:
                 input_image = input_image.resize((params.width, params.height), Image.Resampling.LANCZOS)
-                print(f"Resized input image to {params.width}x{params.height}")
+                _log(f"Resized input image to {params.width}x{params.height}")
 
             # Build generation kwargs with cached embeddings
             gen_kwargs = {
@@ -752,7 +765,7 @@ class DiffusersBackend:
             # Generate image
             result = self._img2img_pipeline(**gen_kwargs)
 
-            print("Img2img generation complete")
+            _log("Img2img generation complete")
 
             if result.images:
                 return result.images[0]
@@ -760,7 +773,7 @@ class DiffusersBackend:
 
         except Exception as e:
             import traceback
-            print(f"Error during img2img generation: {e}")
+            _log(f"Error during img2img generation: {e}")
             traceback.print_exc()
             return None
 
@@ -786,7 +799,7 @@ class DiffusersBackend:
             Generated PIL Image or None if generation failed
         """
         if not self.is_loaded or self._inpaint_pipeline is None:
-            print("No model loaded for inpainting")
+            _log("No model loaded for inpainting")
             return None
 
         try:
@@ -817,7 +830,7 @@ class DiffusersBackend:
             target_width = input_image.width
             target_height = input_image.height
 
-            print(f"Starting inpaint: {target_width}x{target_height}, strength={strength}, {params.steps} steps")
+            _log(f"Starting inpaint: {target_width}x{target_height}, strength={strength}, {params.steps} steps")
 
             # Ensure images are RGB
             if input_image.mode != "RGB":
@@ -830,7 +843,7 @@ class DiffusersBackend:
             # Ensure mask matches input image size
             if mask_image.size != input_image.size:
                 mask_image = mask_image.resize(input_image.size, Image.Resampling.LANCZOS)
-                print(f"Resized mask to match input image: {input_image.width}x{input_image.height}")
+                _log(f"Resized mask to match input image: {input_image.width}x{input_image.height}")
 
             # Build generation kwargs with cached embeddings
             gen_kwargs = {
@@ -859,7 +872,7 @@ class DiffusersBackend:
             # Generate image
             result = self._inpaint_pipeline(**gen_kwargs)
 
-            print("Inpaint generation complete")
+            _log("Inpaint generation complete")
 
             if result.images:
                 return result.images[0]
@@ -867,7 +880,7 @@ class DiffusersBackend:
 
         except Exception as e:
             import traceback
-            print(f"Error during inpaint generation: {e}")
+            _log(f"Error during inpaint generation: {e}")
             traceback.print_exc()
             return None
 
