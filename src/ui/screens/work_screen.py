@@ -105,12 +105,22 @@ class WorkScreen(Gtk.Box):
         scrolled.add_css_class("left-panel")
         scrolled.set_size_request(200, -1)  # Minimum width
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
         scrolled.set_child(box)
+
+        # VRAM display (at the top)
+        self._vram_display = VRAMDisplay()
+        box.append(self._vram_display)
+
+        # Separator
+        separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        separator.set_margin_top(6)
+        separator.set_margin_bottom(6)
+        box.append(separator)
 
         # Model selectors section
         model_header = Gtk.Label(label="Models")
@@ -118,51 +128,52 @@ class WorkScreen(Gtk.Box):
         model_header.set_halign(Gtk.Align.START)
         box.append(model_header)
 
-        # Checkpoint selector
+        # Checkpoint row: selector + optimize checkbox
+        checkpoint_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        box.append(checkpoint_row)
+
         self._checkpoint_selector = ModelSelector(
-            label="Checkpoint:",
+            label="Checkpoint",
             model_type=ModelType.CHECKPOINT,
+            compact=True,
+            label_width=65,
         )
-        box.append(self._checkpoint_selector)
+        self._checkpoint_selector.set_hexpand(True)
+        checkpoint_row.append(self._checkpoint_selector)
 
         # Optimize checkbox for torch.compile
-        self._optimize_checkbox = Gtk.CheckButton(label="Optimize (torch.compile)")
+        self._optimize_checkbox = Gtk.CheckButton(label="Optimize")
         self._optimize_checkbox.set_tooltip_text(
             "When enabled, uses torch.compile for faster generation. "
             "First generation will take longer to compile, but subsequent generations will be much faster. "
             "Compiled kernels are cached and reused across sessions."
         )
-        self._optimize_checkbox.set_active(True)  # Default to enabled
-        box.append(self._optimize_checkbox)
+        self._optimize_checkbox.add_css_class("caption")
+        self._optimize_checkbox.set_active(False)  # Default to disabled
+        checkpoint_row.append(self._optimize_checkbox)
 
         # VAE selector
         self._vae_selector = ModelSelector(
-            label="VAE (optional):",
+            label="VAE",
             model_type=ModelType.VAE,
+            compact=True,
+            label_width=65,
         )
         box.append(self._vae_selector)
 
         # CLIP selector
         self._clip_selector = ModelSelector(
-            label="CLIP (optional):",
+            label="CLIP",
             model_type=ModelType.CLIP,
+            compact=True,
+            label_width=65,
         )
         box.append(self._clip_selector)
 
         # Separator
-        separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        separator.set_margin_top(8)
-        separator.set_margin_bottom(8)
-        box.append(separator)
-
-        # VRAM display
-        self._vram_display = VRAMDisplay()
-        box.append(self._vram_display)
-
-        # Separator
         separator2 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        separator2.set_margin_top(8)
-        separator2.set_margin_bottom(8)
+        separator2.set_margin_top(6)
+        separator2.set_margin_bottom(6)
         box.append(separator2)
 
         # Generation parameters
@@ -171,8 +182,8 @@ class WorkScreen(Gtk.Box):
 
         # Separator
         separator3 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        separator3.set_margin_top(8)
-        separator3.set_margin_bottom(8)
+        separator3.set_margin_top(6)
+        separator3.set_margin_bottom(6)
         box.append(separator3)
 
         # LoRA selector panel
@@ -183,8 +194,8 @@ class WorkScreen(Gtk.Box):
 
         # Separator
         separator4 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        separator4.set_margin_top(8)
-        separator4.set_margin_bottom(8)
+        separator4.set_margin_top(6)
+        separator4.set_margin_bottom(6)
         box.append(separator4)
 
         # Upscale settings
@@ -232,11 +243,11 @@ class WorkScreen(Gtk.Box):
         scrolled.add_css_class("right-panel")
         scrolled.set_size_request(150, -1)  # Minimum width
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
         scrolled.set_child(box)
 
         # Thumbnail gallery

@@ -12,8 +12,10 @@ from src.core.model_manager import model_manager, ModelInfo, ModelType
 class UpscaleSettingsWidget(Gtk.Box):
     """Widget for configuring upscale settings."""
 
+    LABEL_WIDTH = 55  # Match GenerationParamsWidget
+
     def __init__(self, on_changed: Optional[Callable[[], None]] = None):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self._on_changed = on_changed
         self._models: list[ModelInfo] = []
         self._selected_model: Optional[ModelInfo] = None
@@ -25,36 +27,38 @@ class UpscaleSettingsWidget(Gtk.Box):
 
     def _build_ui(self):
         """Build the widget UI."""
-        # Header
+        # Header row with title and enable checkbox
+        header_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self.append(header_row)
+
+        # Title
         header = Gtk.Label(label="Upscaling")
         header.add_css_class("section-header")
         header.set_halign(Gtk.Align.START)
-        self.append(header)
+        header.set_hexpand(True)
+        header_row.append(header)
 
-        # Enable checkbox
-        checkbox_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self._enable_checkbox = Gtk.CheckButton(label="Enable upscaling")
+        # Enable checkbox (compact, on same line as header)
+        self._enable_checkbox = Gtk.CheckButton(label="Enable")
+        self._enable_checkbox.add_css_class("caption")
         self._enable_checkbox.connect("toggled", self._on_enable_toggled)
-        checkbox_row.append(self._enable_checkbox)
-        self.append(checkbox_row)
+        header_row.append(self._enable_checkbox)
 
-        # Model selector
-        model_row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        model_row.set_margin_start(24)  # Indent under checkbox
+        # Model selector row: Label | Dropdown | Refresh
+        model_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self.append(model_row)
 
-        model_label = Gtk.Label(label="Upscale Model:")
+        model_label = Gtk.Label(label="Model")
+        model_label.set_size_request(self.LABEL_WIDTH, -1)
         model_label.set_halign(Gtk.Align.START)
+        model_label.add_css_class("caption")
         model_row.append(model_label)
-
-        # Dropdown row with refresh button
-        dropdown_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        model_row.append(dropdown_row)
 
         self._model_dropdown = Gtk.DropDown()
         self._model_dropdown.set_hexpand(True)
         self._model_dropdown.set_sensitive(False)  # Disabled until checkbox is checked
         self._model_dropdown.connect("notify::selected", self._on_model_changed)
-        dropdown_row.append(self._model_dropdown)
+        model_row.append(self._model_dropdown)
 
         # Refresh button
         self._refresh_button = Gtk.Button()
@@ -62,17 +66,9 @@ class UpscaleSettingsWidget(Gtk.Box):
         self._refresh_button.set_tooltip_text("Refresh upscale model list")
         self._refresh_button.add_css_class("flat")
         self._refresh_button.connect("clicked", self._on_refresh_clicked)
-        dropdown_row.append(self._refresh_button)
+        model_row.append(self._refresh_button)
 
-        self.append(model_row)
         self._model_row = model_row
-
-        # Info label
-        self._info_label = Gtk.Label(label="")
-        self._info_label.set_halign(Gtk.Align.START)
-        self._info_label.set_margin_start(24)
-        self._info_label.add_css_class("dim-label")
-        self.append(self._info_label)
 
         # Initialize model list
         self._update_model_list()
@@ -89,12 +85,6 @@ class UpscaleSettingsWidget(Gtk.Box):
         string_list = Gtk.StringList.new(model_names)
         self._model_dropdown.set_model(string_list)
         self._model_dropdown.set_selected(0)
-
-        # Update info label
-        if not self._models:
-            self._info_label.set_text("No upscale models found in models/upscale/")
-        else:
-            self._info_label.set_text(f"{len(self._models)} upscale model(s) available")
 
     def _on_models_updated(self):
         """Called when the model list is updated."""

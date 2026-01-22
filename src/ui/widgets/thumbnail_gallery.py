@@ -147,20 +147,21 @@ class ThumbnailGallery(Gtk.Box):
     def _build_ui(self):
         """Build the gallery UI."""
         # Header
-        header = Gtk.Label(label="Generated Images")
+        header = Gtk.Label(label="Gallery")
         header.add_css_class("section-header")
         header.set_halign(Gtk.Align.START)
         self.append(header)
 
-        # Directory selector row
+        # Directory selector row: Label | Combo | Refresh
         dir_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        dir_row.set_margin_top(4)
-        dir_row.set_margin_bottom(4)
         self.append(dir_row)
 
-        # Folder icon
-        folder_icon = Gtk.Image.new_from_icon_name("folder-symbolic")
-        dir_row.append(folder_icon)
+        # Directory label
+        dir_label = Gtk.Label(label="Folder")
+        dir_label.set_size_request(45, -1)
+        dir_label.set_halign(Gtk.Align.START)
+        dir_label.add_css_class("caption")
+        dir_row.append(dir_label)
 
         # Editable combo box for directory selection
         self._dir_combo = Gtk.ComboBoxText.new_with_entry()
@@ -177,11 +178,16 @@ class ThumbnailGallery(Gtk.Box):
         refresh_btn.connect("clicked", self._on_refresh_directories)
         dir_row.append(refresh_btn)
 
-        # Mini toolbar
-        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        toolbar.set_margin_top(4)
-        toolbar.set_margin_bottom(4)
-        self.append(toolbar)
+        # Controls row: Sort | Size slider
+        controls_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self.append(controls_row)
+
+        # Sort label
+        sort_label = Gtk.Label(label="Sort")
+        sort_label.set_size_request(45, -1)
+        sort_label.set_halign(Gtk.Align.START)
+        sort_label.add_css_class("caption")
+        controls_row.append(sort_label)
 
         # Sort toggle button
         self._sort_button = Gtk.Button()
@@ -189,18 +195,13 @@ class ThumbnailGallery(Gtk.Box):
         self._sort_button.set_tooltip_text("Sort: Newest first (click to change)")
         self._sort_button.add_css_class("flat")
         self._sort_button.connect("clicked", self._on_sort_clicked)
-        toolbar.append(self._sort_button)
+        controls_row.append(self._sort_button)
 
-        # Separator
-        separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
-        separator.set_margin_start(4)
-        separator.set_margin_end(4)
-        toolbar.append(separator)
-
-        # Size icon (small)
-        size_icon_small = Gtk.Image.new_from_icon_name("view-grid-symbolic")
-        size_icon_small.set_pixel_size(12)
-        toolbar.append(size_icon_small)
+        # Size label
+        size_label = Gtk.Label(label="Size")
+        size_label.set_margin_start(8)
+        size_label.add_css_class("caption")
+        controls_row.append(size_label)
 
         # Thumbnail size slider
         self._size_scale = Gtk.Scale.new_with_range(
@@ -215,17 +216,13 @@ class ThumbnailGallery(Gtk.Box):
         self._size_scale.set_size_request(60, -1)
         self._size_scale.set_tooltip_text(f"Thumbnail size: {self._thumbnail_size}px")
         self._size_scale.connect("value-changed", self._on_size_changed)
-        toolbar.append(self._size_scale)
-
-        # Size icon (large)
-        size_icon_large = Gtk.Image.new_from_icon_name("view-grid-symbolic")
-        size_icon_large.set_pixel_size(20)
-        toolbar.append(size_icon_large)
+        controls_row.append(self._size_scale)
 
         # Scrolled window
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scrolled.set_vexpand(True)
+        scrolled.set_margin_top(4)
         self.append(scrolled)
 
         # Flow box for thumbnails

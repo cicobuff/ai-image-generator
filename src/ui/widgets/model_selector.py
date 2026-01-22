@@ -17,11 +17,15 @@ class ModelSelector(Gtk.Box):
         label: str,
         model_type: ModelType,
         on_changed: Optional[Callable[[Optional[ModelInfo]], None]] = None,
+        compact: bool = False,
+        label_width: int = 70,
     ):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         self._model_type = model_type
         self._on_changed = on_changed
         self._models: list[ModelInfo] = []
+        self._compact = compact
+        self._label_width = label_width
 
         self.add_css_class("model-selector")
         self._build_ui(label)
@@ -31,20 +35,19 @@ class ModelSelector(Gtk.Box):
 
     def _build_ui(self, label_text: str):
         """Build the widget UI."""
-        # Label
+        # Label with fixed width for alignment
         label = Gtk.Label(label=label_text)
         label.set_halign(Gtk.Align.START)
+        label.set_size_request(self._label_width, -1)
+        if self._compact:
+            label.add_css_class("caption")
         self.append(label)
-
-        # Dropdown row with refresh button
-        dropdown_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        self.append(dropdown_row)
 
         # Dropdown
         self._dropdown = Gtk.DropDown()
         self._dropdown.set_hexpand(True)
         self._dropdown.connect("notify::selected", self._on_selection_changed)
-        dropdown_row.append(self._dropdown)
+        self.append(self._dropdown)
 
         # Refresh button
         self._refresh_button = Gtk.Button()
@@ -52,7 +55,7 @@ class ModelSelector(Gtk.Box):
         self._refresh_button.set_tooltip_text("Refresh model list")
         self._refresh_button.add_css_class("flat")
         self._refresh_button.connect("clicked", self._on_refresh_clicked)
-        dropdown_row.append(self._refresh_button)
+        self.append(self._refresh_button)
 
         # Initialize with empty model
         self._update_model_list()

@@ -32,10 +32,20 @@ from src.backends.diffusers_backend import GenerationParams
 class GenerationParamsWidget(Gtk.Box):
     """Widget for configuring image generation parameters."""
 
+    LABEL_WIDTH = 55  # Fixed label width for alignment
+
     def __init__(self):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self._build_ui()
         self._load_defaults()
+
+    def _create_label(self, text: str) -> Gtk.Label:
+        """Create a compact label with fixed width."""
+        label = Gtk.Label(label=text)
+        label.set_size_request(self.LABEL_WIDTH, -1)
+        label.set_halign(Gtk.Align.START)
+        label.add_css_class("caption")
+        return label
 
     def _build_ui(self):
         """Build the parameters UI."""
@@ -45,17 +55,14 @@ class GenerationParamsWidget(Gtk.Box):
         header.set_halign(Gtk.Align.START)
         self.append(header)
 
-        # Size presets
+        # Size row: Label | Dropdown | W: spin | H: spin
         self.append(self._create_size_section())
 
         # Sampler
         self.append(self._create_sampler_section())
 
-        # Steps
-        self.append(self._create_steps_section())
-
-        # CFG Scale
-        self.append(self._create_cfg_section())
+        # Steps and CFG on same row
+        self.append(self._create_steps_cfg_section())
 
         # Strength (for img2img)
         self.append(self._create_strength_section())
@@ -64,109 +71,106 @@ class GenerationParamsWidget(Gtk.Box):
         self.append(self._create_seed_section())
 
     def _create_size_section(self) -> Gtk.Widget:
-        """Create size selection section."""
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        """Create size selection section - all on one line."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+
+        # Size label
+        label = self._create_label("Size")
+        row.append(label)
 
         # Size preset dropdown
-        preset_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        preset_label = Gtk.Label(label="Size:")
-        preset_label.set_size_request(80, -1)
-        preset_label.set_halign(Gtk.Align.START)
-        preset_row.append(preset_label)
-
         presets = list(SIZE_PRESETS.keys())
         self._size_dropdown = Gtk.DropDown.new_from_strings(presets)
         self._size_dropdown.set_hexpand(True)
         self._size_dropdown.connect("notify::selected", self._on_size_preset_changed)
-        preset_row.append(self._size_dropdown)
-        box.append(preset_row)
+        row.append(self._size_dropdown)
 
-        # Custom width/height
-        custom_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-
-        width_label = Gtk.Label(label="W:")
-        custom_row.append(width_label)
+        # W label and spin
+        width_label = Gtk.Label(label="W")
+        width_label.add_css_class("caption")
+        width_label.set_margin_start(4)
+        row.append(width_label)
 
         self._width_spin = Gtk.SpinButton.new_with_range(MIN_SIZE, MAX_SIZE, SIZE_STEP)
         self._width_spin.set_value(DEFAULT_WIDTH)
+        self._width_spin.set_width_chars(5)
         self._width_spin.connect("value-changed", self._on_custom_size_changed)
-        custom_row.append(self._width_spin)
+        row.append(self._width_spin)
 
-        height_label = Gtk.Label(label="H:")
-        height_label.set_margin_start(8)
-        custom_row.append(height_label)
+        # H label and spin
+        height_label = Gtk.Label(label="H")
+        height_label.add_css_class("caption")
+        height_label.set_margin_start(4)
+        row.append(height_label)
 
         self._height_spin = Gtk.SpinButton.new_with_range(MIN_SIZE, MAX_SIZE, SIZE_STEP)
         self._height_spin.set_value(DEFAULT_HEIGHT)
+        self._height_spin.set_width_chars(5)
         self._height_spin.connect("value-changed", self._on_custom_size_changed)
-        custom_row.append(self._height_spin)
+        row.append(self._height_spin)
 
-        box.append(custom_row)
-
-        return box
+        return row
 
     def _create_sampler_section(self) -> Gtk.Widget:
-        """Create sampler selection section."""
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        row.add_css_class("param-row")
+        """Create sampler and scheduler selection on the same row."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
 
-        label = Gtk.Label(label="Sampler:")
-        label.set_size_request(80, -1)
-        label.set_halign(Gtk.Align.START)
-        row.append(label)
+        # Sampler
+        sampler_label = self._create_label("Sampler")
+        row.append(sampler_label)
 
         sampler_names = list(SAMPLERS.keys())
         self._sampler_dropdown = Gtk.DropDown.new_from_strings(sampler_names)
         self._sampler_dropdown.set_hexpand(True)
         row.append(self._sampler_dropdown)
 
+        # Scheduler
+        scheduler_label = Gtk.Label(label="Sched")
+        scheduler_label.add_css_class("caption")
+        scheduler_label.set_margin_start(8)
+        row.append(scheduler_label)
+
+        scheduler_names = SCHEDULERS
+        self._scheduler_dropdown = Gtk.DropDown.new_from_strings(scheduler_names)
+        self._scheduler_dropdown.set_hexpand(True)
+        row.append(self._scheduler_dropdown)
+
         return row
 
-    def _create_steps_section(self) -> Gtk.Widget:
-        """Create steps input section."""
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        row.add_css_class("param-row")
+    def _create_steps_cfg_section(self) -> Gtk.Widget:
+        """Create steps and CFG scale on the same row."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
 
-        label = Gtk.Label(label="Steps:")
-        label.set_size_request(80, -1)
-        label.set_halign(Gtk.Align.START)
-        row.append(label)
+        # Steps
+        steps_label = self._create_label("Steps")
+        row.append(steps_label)
 
         self._steps_spin = Gtk.SpinButton.new_with_range(MIN_STEPS, MAX_STEPS, 1)
         self._steps_spin.set_value(DEFAULT_STEPS)
-        self._steps_spin.set_hexpand(True)
+        self._steps_spin.set_width_chars(4)
         row.append(self._steps_spin)
 
-        return row
-
-    def _create_cfg_section(self) -> Gtk.Widget:
-        """Create CFG scale input section."""
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        row.add_css_class("param-row")
-
-        label = Gtk.Label(label="CFG Scale:")
-        label.set_size_request(80, -1)
-        label.set_halign(Gtk.Align.START)
-        row.append(label)
+        # CFG Scale
+        cfg_label = Gtk.Label(label="CFG")
+        cfg_label.add_css_class("caption")
+        cfg_label.set_margin_start(8)
+        row.append(cfg_label)
 
         self._cfg_spin = Gtk.SpinButton.new_with_range(
             MIN_CFG_SCALE, MAX_CFG_SCALE, 0.5
         )
         self._cfg_spin.set_digits(1)
         self._cfg_spin.set_value(DEFAULT_CFG_SCALE)
-        self._cfg_spin.set_hexpand(True)
+        self._cfg_spin.set_width_chars(4)
         row.append(self._cfg_spin)
 
         return row
 
     def _create_strength_section(self) -> Gtk.Widget:
         """Create strength input section (for img2img)."""
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        row.add_css_class("param-row")
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
 
-        label = Gtk.Label(label="Strength:")
-        label.set_size_request(80, -1)
-        label.set_halign(Gtk.Align.START)
+        label = self._create_label("Strength")
         label.set_tooltip_text("How much to transform the input image (0=no change, 1=full generation)")
         row.append(label)
 
@@ -181,12 +185,9 @@ class GenerationParamsWidget(Gtk.Box):
 
     def _create_seed_section(self) -> Gtk.Widget:
         """Create seed input section."""
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        row.add_css_class("param-row")
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
 
-        label = Gtk.Label(label="Seed:")
-        label.set_size_request(80, -1)
-        label.set_halign(Gtk.Align.START)
+        label = self._create_label("Seed")
         row.append(label)
 
         self._seed_spin = Gtk.SpinButton.new_with_range(-1, 2**32 - 1, 1)
@@ -194,8 +195,11 @@ class GenerationParamsWidget(Gtk.Box):
         self._seed_spin.set_hexpand(True)
         row.append(self._seed_spin)
 
-        # Random button
-        random_button = Gtk.Button(label="Random")
+        # Random button (compact)
+        random_button = Gtk.Button()
+        random_button.set_icon_name("media-playlist-shuffle-symbolic")
+        random_button.set_tooltip_text("Random seed (-1)")
+        random_button.add_css_class("flat")
         random_button.connect("clicked", lambda b: self._seed_spin.set_value(-1))
         row.append(random_button)
 
@@ -216,6 +220,13 @@ class GenerationParamsWidget(Gtk.Box):
         if config.default_sampler in sampler_names:
             self._sampler_dropdown.set_selected(
                 sampler_names.index(config.default_sampler)
+            )
+
+        # Set scheduler dropdown
+        scheduler_names = SCHEDULERS
+        if config.default_scheduler in scheduler_names:
+            self._scheduler_dropdown.set_selected(
+                scheduler_names.index(config.default_scheduler)
             )
 
         # Set size preset if it matches
@@ -263,6 +274,10 @@ class GenerationParamsWidget(Gtk.Box):
         selected_sampler = self._sampler_dropdown.get_selected()
         sampler = sampler_names[selected_sampler] if 0 <= selected_sampler < len(sampler_names) else DEFAULT_SAMPLER
 
+        scheduler_names = SCHEDULERS
+        selected_scheduler = self._scheduler_dropdown.get_selected()
+        scheduler = scheduler_names[selected_scheduler] if 0 <= selected_scheduler < len(scheduler_names) else DEFAULT_SCHEDULER
+
         return GenerationParams(
             prompt=prompt,
             negative_prompt=negative_prompt,
@@ -272,6 +287,7 @@ class GenerationParamsWidget(Gtk.Box):
             cfg_scale=self._cfg_spin.get_value(),
             seed=int(self._seed_spin.get_value()),
             sampler=sampler,
+            scheduler=scheduler,
         )
 
     def set_seed(self, seed: int):
@@ -297,6 +313,12 @@ class GenerationParamsWidget(Gtk.Box):
         sampler_names = list(SAMPLERS.keys())
         if sampler in sampler_names:
             self._sampler_dropdown.set_selected(sampler_names.index(sampler))
+
+    def set_scheduler(self, scheduler: str):
+        """Set the scheduler by name."""
+        scheduler_names = SCHEDULERS
+        if scheduler in scheduler_names:
+            self._scheduler_dropdown.set_selected(scheduler_names.index(scheduler))
 
     def get_strength(self) -> float:
         """Get the img2img strength value."""

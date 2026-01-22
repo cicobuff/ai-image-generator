@@ -774,8 +774,13 @@ class DiffusersBackend:
         """Get list of currently loaded LoRAs as (path, weight) tuples."""
         return self._loaded_loras.copy()
 
-    def _get_scheduler(self, sampler: str) -> Any:
-        """Get the appropriate scheduler for the given sampler name."""
+    def _get_scheduler(self, sampler: str, scheduler_type: str = "normal") -> Any:
+        """Get the appropriate scheduler for the given sampler name and schedule type.
+
+        Args:
+            sampler: The sampler name (e.g., "euler", "dpmpp_2m")
+            scheduler_type: The schedule type ("normal", "karras", "exponential", "sgm_uniform")
+        """
         scheduler_name = SAMPLERS.get(sampler, "EulerDiscreteScheduler")
         scheduler_class = self.SCHEDULER_CLASSES.get(
             scheduler_name, EulerDiscreteScheduler
@@ -787,9 +792,16 @@ class DiffusersBackend:
         # Create scheduler with appropriate settings
         kwargs = {}
 
-        # Apply Karras sigmas if needed
-        if sampler in KARRAS_SAMPLERS:
+        # Apply schedule type
+        if scheduler_type == "simple":
+            kwargs["timestep_spacing"] = "linspace"
+        elif scheduler_type == "karras":
             kwargs["use_karras_sigmas"] = True
+        elif scheduler_type == "exponential":
+            kwargs["use_exponential_sigmas"] = True
+        elif scheduler_type == "sgm_uniform":
+            kwargs["timestep_spacing"] = "trailing"
+        # "normal" uses defaults
 
         return scheduler_class.from_config(config, **kwargs)
 
@@ -884,7 +896,7 @@ class DiffusersBackend:
 
         try:
             # Set up scheduler
-            self._pipeline.scheduler = self._get_scheduler(params.sampler)
+            self._pipeline.scheduler = self._get_scheduler(params.sampler, params.scheduler)
 
             # Encode prompts (uses cache if prompts haven't changed)
             self._encode_prompts(params.prompt, params.negative_prompt)
@@ -973,7 +985,7 @@ class DiffusersBackend:
 
         try:
             # Set up scheduler
-            self._img2img_pipeline.scheduler = self._get_scheduler(params.sampler)
+            self._img2img_pipeline.scheduler = self._get_scheduler(params.sampler, params.scheduler)
 
             # Encode prompts (uses cache if prompts haven't changed)
             self._encode_prompts(params.prompt, params.negative_prompt)
@@ -1065,7 +1077,7 @@ class DiffusersBackend:
 
         try:
             # Set up scheduler
-            self._inpaint_pipeline.scheduler = self._get_scheduler(params.sampler)
+            self._inpaint_pipeline.scheduler = self._get_scheduler(params.sampler, params.scheduler)
 
             # Encode prompts (uses cache if prompts haven't changed)
             self._encode_prompts(params.prompt, params.negative_prompt)

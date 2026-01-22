@@ -105,11 +105,12 @@ window {
 
 /* Model selector */
 .model-selector {
-    margin-bottom: 8px;
+    margin-bottom: 4px;
 }
 
-.model-selector label {
-    margin-bottom: 4px;
+/* Caption text - smaller font for compact layouts */
+.caption {
+    font-size: 0.85em;
 }
 
 /* Generation parameters */

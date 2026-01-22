@@ -36,7 +36,7 @@ SAMPLERS = {
 KARRAS_SAMPLERS = {"dpm++_2m_karras", "dpm++_sde_karras"}
 
 # Scheduler types (noise schedules)
-SCHEDULERS = ["normal", "karras", "exponential", "sgm_uniform"]
+SCHEDULERS = ["normal", "simple", "karras", "exponential", "sgm_uniform"]
 
 # Default generation parameters
 DEFAULT_WIDTH = 1024

@@ -44,7 +44,7 @@ class LoRAItemRow(Gtk.Box):
         """Build the row UI."""
         # Enable toggle
         self._enable_toggle = Gtk.CheckButton()
-        self._enable_toggle.set_active(True)
+        self._enable_toggle.set_active(False)  # Default to disabled
         self._enable_toggle.set_tooltip_text("Enable/disable this LoRA")
         self._enable_toggle.connect("toggled", self._on_toggle_changed)
         self.append(self._enable_toggle)
@@ -174,7 +174,7 @@ class LoRASelectorPanel(Gtk.Box):
 
     def _build_ui(self):
         """Build the panel UI."""
-        # Header row with title and add button
+        # Header row with title and buttons
         header_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         self.append(header_row)
 
