@@ -118,7 +118,7 @@ class ThumbnailItem(Gtk.Button):
 
 
 class ThumbnailGallery(Gtk.Box):
-    """Scrollable gallery of image thumbnails with toolbar."""
+    """Scrollable gallery of image thumbnails with toolbar and directory selector."""
 
     MIN_THUMBNAIL_SIZE = 64
     MAX_THUMBNAIL_SIZE = 256
@@ -127,15 +127,19 @@ class ThumbnailGallery(Gtk.Box):
     def __init__(
         self,
         on_image_selected: Optional[Callable[[Path], None]] = None,
+        on_directory_changed: Optional[Callable[[Path], None]] = None,
     ):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._on_image_selected = on_image_selected
+        self._on_directory_changed = on_directory_changed
         self._thumbnails: List[ThumbnailItem] = []
         self._image_paths: List[Path] = []  # Store paths for re-sorting
         self._selected_path: Optional[Path] = None
         self._thumbnail_size = self.DEFAULT_THUMBNAIL_SIZE
         self._sort_order = SortOrder.DATE_DESC
-        self._current_directory: Optional[Path] = None
+        self._base_directory: Optional[Path] = None  # Root output directory
+        self._current_directory: Optional[Path] = None  # Currently selected subdirectory
+        self._subdirectories: List[str] = []  # List of subdirectory names
 
         self.add_css_class("thumbnail-gallery")
         self._build_ui()
@@ -147,6 +151,31 @@ class ThumbnailGallery(Gtk.Box):
         header.add_css_class("section-header")
         header.set_halign(Gtk.Align.START)
         self.append(header)
+
+        # Directory selector row
+        dir_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        dir_row.set_margin_top(4)
+        dir_row.set_margin_bottom(4)
+        self.append(dir_row)
+
+        # Folder icon
+        folder_icon = Gtk.Image.new_from_icon_name("folder-symbolic")
+        dir_row.append(folder_icon)
+
+        # Editable combo box for directory selection
+        self._dir_combo = Gtk.ComboBoxText.new_with_entry()
+        self._dir_combo.set_hexpand(True)
+        self._dir_combo.set_tooltip_text("Select or type a subdirectory name")
+        self._dir_combo.connect("changed", self._on_directory_combo_changed)
+        dir_row.append(self._dir_combo)
+
+        # Refresh directory list button
+        refresh_btn = Gtk.Button()
+        refresh_btn.set_icon_name("view-refresh-symbolic")
+        refresh_btn.set_tooltip_text("Refresh directory list")
+        refresh_btn.add_css_class("flat")
+        refresh_btn.connect("clicked", self._on_refresh_directories)
+        dir_row.append(refresh_btn)
 
         # Mini toolbar
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
@@ -210,6 +239,111 @@ class ThumbnailGallery(Gtk.Box):
         self._flowbox.set_column_spacing(4)
         scrolled.set_child(self._flowbox)
 
+    def _scan_subdirectories(self):
+        """Scan for subdirectories in the base directory."""
+        self._subdirectories = []
+        if self._base_directory is None or not self._base_directory.exists():
+            return
+
+        # Get all subdirectories
+        for item in self._base_directory.iterdir():
+            if item.is_dir():
+                self._subdirectories.append(item.name)
+
+        # Sort alphabetically
+        self._subdirectories.sort()
+
+    def _update_directory_combo(self):
+        """Update the directory combo box with current subdirectories."""
+        # Block signal while updating
+        self._dir_combo.handler_block_by_func(self._on_directory_combo_changed)
+
+        # Clear existing items
+        self._dir_combo.remove_all()
+
+        # Add root directory option (empty string means root)
+        self._dir_combo.append_text("(root)")
+
+        # Add subdirectories
+        for subdir in self._subdirectories:
+            self._dir_combo.append_text(subdir)
+
+        # Set active based on current directory
+        if self._current_directory == self._base_directory:
+            self._dir_combo.set_active(0)
+        else:
+            # Find the subdirectory in the list
+            rel_path = self._get_relative_subdir()
+            if rel_path in self._subdirectories:
+                idx = self._subdirectories.index(rel_path) + 1  # +1 for (root)
+                self._dir_combo.set_active(idx)
+            else:
+                # Custom typed directory - set text in entry
+                entry = self._dir_combo.get_child()
+                if entry and rel_path:
+                    entry.set_text(rel_path)
+
+        # Unblock signal
+        self._dir_combo.handler_unblock_by_func(self._on_directory_combo_changed)
+
+    def _get_relative_subdir(self) -> str:
+        """Get the relative subdirectory name from current directory."""
+        if self._current_directory is None or self._base_directory is None:
+            return ""
+        if self._current_directory == self._base_directory:
+            return ""
+        try:
+            rel = self._current_directory.relative_to(self._base_directory)
+            return str(rel)
+        except ValueError:
+            return ""
+
+    def _on_directory_combo_changed(self, combo):
+        """Handle directory selection change."""
+        if self._base_directory is None:
+            return
+
+        # Get the selected/typed text
+        active_idx = combo.get_active()
+        if active_idx == 0:
+            # Root directory selected
+            new_dir = self._base_directory
+        elif active_idx > 0:
+            # Existing subdirectory selected
+            subdir_name = self._subdirectories[active_idx - 1]
+            new_dir = self._base_directory / subdir_name
+        else:
+            # Custom text typed
+            entry = combo.get_child()
+            if entry:
+                text = entry.get_text().strip()
+                if text and text != "(root)":
+                    new_dir = self._base_directory / text
+                else:
+                    new_dir = self._base_directory
+            else:
+                new_dir = self._base_directory
+
+        # Update current directory
+        if new_dir != self._current_directory:
+            self._current_directory = new_dir
+
+            # Notify callback
+            if self._on_directory_changed:
+                self._on_directory_changed(new_dir)
+
+            # Refresh thumbnails if directory exists
+            if new_dir.exists():
+                self._load_thumbnails_from_current_directory()
+            else:
+                # Directory doesn't exist - clear thumbnails
+                self._clear_thumbnails()
+
+    def _on_refresh_directories(self, button):
+        """Handle refresh directories button click."""
+        self._scan_subdirectories()
+        self._update_directory_combo()
+
     def _on_sort_clicked(self, button):
         """Handle sort button click."""
         # Toggle sort order
@@ -236,6 +370,14 @@ class ThumbnailGallery(Gtk.Box):
 
         # Refresh thumbnails with new size
         self._refresh_thumbnails()
+
+    def _clear_thumbnails(self):
+        """Clear all thumbnail widgets without clearing paths."""
+        for thumb in self._thumbnails:
+            self._flowbox.remove(thumb)
+        self._thumbnails.clear()
+        self._image_paths.clear()
+        self._selected_path = None
 
     def _refresh_thumbnails(self):
         """Refresh all thumbnails with current settings."""
@@ -273,60 +415,20 @@ class ThumbnailGallery(Gtk.Box):
         reverse = self._sort_order == SortOrder.DATE_DESC
         return sorted(paths, key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=reverse)
 
-    def add_image(self, path: Path, image: Optional[Image.Image] = None):
-        """Add a new image to the gallery."""
-        # Add to paths list
-        if path not in self._image_paths:
-            self._image_paths.append(path)
+    def _load_thumbnails_from_current_directory(self):
+        """Load thumbnails from the current directory (not subdirectories)."""
+        self._clear_thumbnails()
 
-        thumbnail = ThumbnailItem(
-            path=path,
-            thumbnail_size=self._thumbnail_size,
-            image=image,
-            on_click=self._on_thumbnail_clicked,
-        )
-
-        # Insert based on sort order
-        if self._sort_order == SortOrder.DATE_DESC:
-            # Newest first - prepend
-            self._thumbnails.insert(0, thumbnail)
-            self._flowbox.prepend(thumbnail)
-        else:
-            # Oldest first - append
-            self._thumbnails.append(thumbnail)
-            self._flowbox.append(thumbnail)
-
-    def _on_thumbnail_clicked(self, path: Path):
-        """Handle thumbnail click."""
-        # Update selection state
-        self._selected_path = path
-        for thumb in self._thumbnails:
-            thumb.set_selected(thumb.path == path)
-
-        # Notify callback
-        if self._on_image_selected:
-            self._on_image_selected(path)
-
-    def clear(self):
-        """Clear all thumbnails."""
-        for thumb in self._thumbnails:
-            self._flowbox.remove(thumb)
-        self._thumbnails.clear()
-        self._image_paths.clear()
-        self._selected_path = None
-
-    def load_from_directory(self, directory: Path):
-        """Load thumbnails from a directory."""
-        self.clear()
-        self._current_directory = directory
-
-        if not directory.exists():
+        if self._current_directory is None or not self._current_directory.exists():
             return
 
-        # Get image files
+        # Get image files (only in current directory, not subdirectories)
         image_files = []
         for ext in (".png", ".jpg", ".jpeg", ".webp"):
-            image_files.extend(directory.glob(f"*{ext}"))
+            # Use iterdir to avoid recursion into subdirectories
+            for item in self._current_directory.iterdir():
+                if item.is_file() and item.suffix.lower() == ext:
+                    image_files.append(item)
 
         # Store paths
         self._image_paths = image_files
@@ -344,6 +446,62 @@ class ThumbnailGallery(Gtk.Box):
             self._thumbnails.append(thumbnail)
             self._flowbox.append(thumbnail)
 
+    def add_image(self, path: Path, image: Optional[Image.Image] = None):
+        """Add a new image to the gallery."""
+        # Only add if the image is in the current directory
+        if self._current_directory and path.parent == self._current_directory:
+            # Add to paths list
+            if path not in self._image_paths:
+                self._image_paths.append(path)
+
+            thumbnail = ThumbnailItem(
+                path=path,
+                thumbnail_size=self._thumbnail_size,
+                image=image,
+                on_click=self._on_thumbnail_clicked,
+            )
+
+            # Insert based on sort order
+            if self._sort_order == SortOrder.DATE_DESC:
+                # Newest first - prepend
+                self._thumbnails.insert(0, thumbnail)
+                self._flowbox.prepend(thumbnail)
+            else:
+                # Oldest first - append
+                self._thumbnails.append(thumbnail)
+                self._flowbox.append(thumbnail)
+
+    def _on_thumbnail_clicked(self, path: Path):
+        """Handle thumbnail click."""
+        # Update selection state
+        self._selected_path = path
+        for thumb in self._thumbnails:
+            thumb.set_selected(thumb.path == path)
+
+        # Notify callback
+        if self._on_image_selected:
+            self._on_image_selected(path)
+
+    def clear(self):
+        """Clear all thumbnails."""
+        self._clear_thumbnails()
+
+    def load_from_directory(self, directory: Path):
+        """Set the base directory and load thumbnails."""
+        self._base_directory = directory
+        self._current_directory = directory
+
+        # Ensure directory exists
+        if not directory.exists():
+            directory.mkdir(parents=True, exist_ok=True)
+
+        # Scan for subdirectories
+        self._scan_subdirectories()
+        self._update_directory_combo()
+
+        # Load thumbnails from root
+        self._load_thumbnails_from_current_directory()
+
     def get_selected_path(self) -> Optional[Path]:
         """Get the currently selected image path."""
         return self._selected_path
@@ -351,6 +509,46 @@ class ThumbnailGallery(Gtk.Box):
     def select_path(self, path: Path):
         """Select a specific image by path."""
         self._on_thumbnail_clicked(path)
+
+    def get_output_directory(self) -> Path:
+        """Get the current output directory for saving new images."""
+        if self._current_directory is not None:
+            return self._current_directory
+        if self._base_directory is not None:
+            return self._base_directory
+        # Fallback
+        from src.core.config import config_manager
+        return config_manager.config.get_output_path()
+
+    def set_subdirectory(self, subdir_name: str):
+        """Set the current subdirectory by name."""
+        if self._base_directory is None:
+            return
+
+        if not subdir_name or subdir_name == "(root)":
+            new_dir = self._base_directory
+        else:
+            new_dir = self._base_directory / subdir_name
+
+        self._current_directory = new_dir
+
+        # Update combo box
+        entry = self._dir_combo.get_child()
+        if entry:
+            if subdir_name and subdir_name != "(root)":
+                entry.set_text(subdir_name)
+            else:
+                self._dir_combo.set_active(0)
+
+        # Notify callback
+        if self._on_directory_changed:
+            self._on_directory_changed(new_dir)
+
+        # Refresh thumbnails if directory exists
+        if new_dir.exists():
+            self._load_thumbnails_from_current_directory()
+        else:
+            self._clear_thumbnails()
 
     @property
     def thumbnail_size(self) -> int:
@@ -367,3 +565,13 @@ class ThumbnailGallery(Gtk.Box):
     def sort_order(self) -> SortOrder:
         """Get current sort order."""
         return self._sort_order
+
+    @property
+    def current_directory(self) -> Optional[Path]:
+        """Get the current directory being displayed."""
+        return self._current_directory
+
+    @property
+    def base_directory(self) -> Optional[Path]:
+        """Get the base output directory."""
+        return self._base_directory

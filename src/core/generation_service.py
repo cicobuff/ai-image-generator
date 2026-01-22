@@ -189,6 +189,7 @@ class GenerationService:
         upscale_enabled: bool = False,
         upscale_model_path: Optional[str] = None,
         upscale_model_name: str = "",
+        output_dir: Optional[Path] = None,
     ) -> None:
         """Start image generation in background thread.
 
@@ -197,6 +198,7 @@ class GenerationService:
             upscale_enabled: Whether to upscale the result
             upscale_model_path: Path to the upscale model
             upscale_model_name: Name of the upscale model (for metadata)
+            output_dir: Optional output directory for saving images
         """
         if self.is_busy:
             return
@@ -278,6 +280,7 @@ class GenerationService:
                     upscale_factor=upscale_factor,
                     original_width=original_width,
                     original_height=original_height,
+                    output_dir=output_dir,
                 )
 
                 self._notify_generation_complete(
@@ -309,6 +312,7 @@ class GenerationService:
         upscale_enabled: bool = False,
         upscale_model_path: Optional[str] = None,
         upscale_model_name: str = "",
+        output_dir: Optional[Path] = None,
     ) -> None:
         """Start img2img generation in background thread.
 
@@ -319,6 +323,7 @@ class GenerationService:
             upscale_enabled: Whether to upscale the result
             upscale_model_path: Path to the upscale model
             upscale_model_name: Name of the upscale model (for metadata)
+            output_dir: Optional output directory for saving images
         """
         if self.is_busy:
             return
@@ -412,6 +417,7 @@ class GenerationService:
                     original_height=original_height,
                     is_img2img=True,
                     img2img_strength=strength,
+                    output_dir=output_dir,
                 )
 
                 self._notify_generation_complete(
@@ -444,6 +450,7 @@ class GenerationService:
         upscale_enabled: bool = False,
         upscale_model_path: Optional[str] = None,
         upscale_model_name: str = "",
+        output_dir: Optional[Path] = None,
     ) -> None:
         """Start inpaint generation in background thread.
 
@@ -455,6 +462,7 @@ class GenerationService:
             upscale_enabled: Whether to upscale the result
             upscale_model_path: Path to the upscale model
             upscale_model_name: Name of the upscale model (for metadata)
+            output_dir: Optional output directory for saving images
         """
         if self.is_busy:
             return
@@ -555,6 +563,7 @@ class GenerationService:
                     original_height=original_height,
                     is_inpaint=True,
                     inpaint_strength=strength,
+                    output_dir=output_dir,
                 )
 
                 self._notify_generation_complete(
@@ -597,9 +606,11 @@ class GenerationService:
         img2img_strength: float = 0.0,
         is_inpaint: bool = False,
         inpaint_strength: float = 0.0,
+        output_dir: Optional[Path] = None,
     ) -> Path:
         """Save generated image to output directory with metadata."""
-        output_dir = config_manager.config.get_output_path()
+        if output_dir is None:
+            output_dir = config_manager.config.get_output_path()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Generate filename with timestamp and seed

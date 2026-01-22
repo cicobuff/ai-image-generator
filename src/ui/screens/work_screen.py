@@ -210,6 +210,7 @@ class WorkScreen(Gtk.Box):
         # Thumbnail gallery
         self._thumbnail_gallery = ThumbnailGallery(
             on_image_selected=self._on_thumbnail_selected,
+            on_directory_changed=self._on_gallery_directory_changed,
         )
         self._thumbnail_gallery.set_vexpand(True)
         box.append(self._thumbnail_gallery)
@@ -266,6 +267,13 @@ class WorkScreen(Gtk.Box):
         self._toolbar.set_model_loaded(False)
         self._status_bar.set_text("Models unloaded")
 
+    def _on_gallery_directory_changed(self, directory: Path):
+        """Handle gallery directory change."""
+        if directory.exists():
+            self._status_bar.set_text(f"Output directory: {directory.name or 'root'}")
+        else:
+            self._status_bar.set_text(f"New directory: {directory.name} (will be created on save)")
+
     def _on_generate(self):
         """Handle Generate button click."""
         if not generation_service.is_model_loaded:
@@ -288,11 +296,15 @@ class WorkScreen(Gtk.Box):
         upscale_model_path = self._upscale_widget.selected_model_path
         upscale_model_name = self._upscale_widget.selected_model_name
 
+        # Get output directory from gallery
+        output_dir = self._thumbnail_gallery.get_output_directory()
+
         generation_service.generate(
             params,
             upscale_enabled=upscale_enabled,
             upscale_model_path=upscale_model_path,
             upscale_model_name=upscale_model_name,
+            output_dir=output_dir,
         )
 
     def _on_img2img(self):
@@ -324,6 +336,9 @@ class WorkScreen(Gtk.Box):
         upscale_model_path = self._upscale_widget.selected_model_path
         upscale_model_name = self._upscale_widget.selected_model_name
 
+        # Get output directory from gallery
+        output_dir = self._thumbnail_gallery.get_output_directory()
+
         generation_service.generate_img2img(
             params,
             input_image=input_image,
@@ -331,6 +346,7 @@ class WorkScreen(Gtk.Box):
             upscale_enabled=upscale_enabled,
             upscale_model_path=upscale_model_path,
             upscale_model_name=upscale_model_name,
+            output_dir=output_dir,
         )
 
     def _on_cancel(self):
@@ -411,6 +427,9 @@ class WorkScreen(Gtk.Box):
         upscale_model_path = self._upscale_widget.selected_model_path
         upscale_model_name = self._upscale_widget.selected_model_name
 
+        # Get output directory from gallery
+        output_dir = self._thumbnail_gallery.get_output_directory()
+
         generation_service.generate_inpaint(
             params,
             input_image=original_image,
@@ -419,6 +438,7 @@ class WorkScreen(Gtk.Box):
             upscale_enabled=upscale_enabled,
             upscale_model_path=upscale_model_path,
             upscale_model_name=upscale_model_name,
+            output_dir=output_dir,
         )
 
     def _on_state_changed(self, state: GenerationState):
