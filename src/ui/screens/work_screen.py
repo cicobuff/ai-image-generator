@@ -648,7 +648,74 @@ class WorkScreen(Gtk.Box):
             checkpoint_name = model_manager.loaded.checkpoint.name
             vae_name = model_manager.loaded.vae.name if model_manager.loaded.vae else ""
 
-            GLib.idle_add(self._status_bar.set_text, f"Loading models on {len(gpu_indices)} GPU(s)...")
+            # Check optimization settings
+            # Note: torch.compile with CUDA graphs doesn't work well across multiple GPUs
+            # due to CUDA graph capture conflicts, so we only enable it for single-GPU batch
+            optimize_enabled = self._optimize_checkbox.get_active()
+            use_compiled = False
+
+            if optimize_enabled and len(gpu_indices) > 1:
+                # Multi-GPU batch with optimization requested - warn user and disable
+                GLib.idle_add(
+                    self._status_bar.set_text,
+                    f"Note: Optimization disabled for multi-GPU batch (CUDA graph conflicts). Loading normally..."
+                )
+                optimize_enabled = False  # Disable for this batch
+
+            if optimize_enabled:
+                # Single GPU batch - optimization is safe to use
+                # Check if compiled cache exists
+                has_cache = diffusers_backend.has_compiled_cache(
+                    checkpoint_path, params.width, params.height
+                )
+
+                if has_cache:
+                    GLib.idle_add(
+                        self._status_bar.set_text,
+                        f"Compiled cache found. Loading optimized model on GPU {gpu_indices[0]}..."
+                    )
+                    use_compiled = True
+                else:
+                    # Need to compile first
+                    GLib.idle_add(
+                        self._status_bar.set_text,
+                        f"Compiling model on GPU {gpu_indices[0]} (first time only)..."
+                    )
+
+                    # Create a temporary backend on first GPU for compilation
+                    compile_backend = DiffusersBackend(gpu_index=gpu_indices[0])
+                    success = compile_backend.compile_model(
+                        checkpoint_path=checkpoint_path,
+                        model_type=model_type,
+                        vae_path=vae_path,
+                        target_width=params.width,
+                        target_height=params.height,
+                        progress_callback=lambda msg, prog: GLib.idle_add(
+                            self._on_batch_compile_progress, msg, prog
+                        ),
+                    )
+
+                    # Unload the compile backend to free VRAM
+                    compile_backend.unload_model()
+                    del compile_backend
+
+                    if not success:
+                        GLib.idle_add(
+                            self._status_bar.set_text,
+                            "Compilation failed. Proceeding without optimization..."
+                        )
+                        use_compiled = False
+                    else:
+                        GLib.idle_add(
+                            self._status_bar.set_text,
+                            f"Compilation complete. Loading optimized model on GPU {gpu_indices[0]}..."
+                        )
+                        use_compiled = True
+
+            if not optimize_enabled and len(gpu_indices) == 1:
+                GLib.idle_add(self._status_bar.set_text, f"Loading model on GPU {gpu_indices[0]}...")
+            elif not optimize_enabled and len(gpu_indices) > 1:
+                GLib.idle_add(self._status_bar.set_text, f"Loading models on {len(gpu_indices)} GPU(s)...")
 
             # Create backend instances for each GPU and load models
             self._gpu_backends = {}
@@ -658,7 +725,7 @@ class WorkScreen(Gtk.Box):
 
                 GLib.idle_add(
                     self._status_bar.set_text,
-                    f"Loading model on GPU {gpu_idx} ({i + 1}/{len(gpu_indices)})..."
+                    f"Loading {'optimized ' if use_compiled else ''}model on GPU {gpu_idx} ({i + 1}/{len(gpu_indices)})..."
                 )
 
                 backend = DiffusersBackend(gpu_index=gpu_idx)
@@ -666,6 +733,9 @@ class WorkScreen(Gtk.Box):
                     checkpoint_path=checkpoint_path,
                     model_type=model_type,
                     vae_path=vae_path,
+                    use_compiled=use_compiled,
+                    target_width=params.width,
+                    target_height=params.height,
                 )
 
                 if not success:
@@ -921,6 +991,11 @@ class WorkScreen(Gtk.Box):
         # Update toolbar
         self._toolbar.set_has_image(True)
         self._update_upscale_button_state()
+
+    def _on_batch_compile_progress(self, message: str, progress: float):
+        """Handle compilation progress during batch setup (called on main thread)."""
+        self._status_bar.set_text(message)
+        self._toolbar.set_progress(message, progress)
 
     def _cleanup_gpu_backends(self):
         """Clean up GPU backend instances."""
