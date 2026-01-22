@@ -26,6 +26,7 @@ class Toolbar(Gtk.Box):
         on_clear: Optional[Callable[[], None]] = None,
         on_generate: Optional[Callable[[], None]] = None,
         on_img2img: Optional[Callable[[], None]] = None,
+        on_upscale: Optional[Callable[[], None]] = None,
         on_cancel: Optional[Callable[[], None]] = None,
         on_inpaint_mode_changed: Optional[Callable[[bool], None]] = None,
         on_inpaint_tool_changed: Optional[Callable[[InpaintTool], None]] = None,
@@ -37,6 +38,7 @@ class Toolbar(Gtk.Box):
         self._on_clear = on_clear
         self._on_generate = on_generate
         self._on_img2img = on_img2img
+        self._on_upscale = on_upscale
         self._on_cancel = on_cancel
         self._on_inpaint_mode_changed = on_inpaint_mode_changed
         self._on_inpaint_tool_changed = on_inpaint_tool_changed
@@ -46,6 +48,7 @@ class Toolbar(Gtk.Box):
         self._inpaint_mode = False
         self._current_tool = InpaintTool.NONE
         self._model_loaded = False
+        self._upscale_enabled = False
 
         self.add_css_class("toolbar")
         self._build_ui()
@@ -80,6 +83,13 @@ class Toolbar(Gtk.Box):
         self._img2img_button.set_tooltip_text("Generate a new image based on the current image")
         self._img2img_button.connect("clicked", self._on_img2img_clicked)
         self.append(self._img2img_button)
+
+        # Upscale button
+        self._upscale_button = Gtk.Button(label="Upscale")
+        self._upscale_button.set_tooltip_text("Upscale the current image using the selected upscaler")
+        self._upscale_button.connect("clicked", self._on_upscale_clicked)
+        self._upscale_button.set_sensitive(False)  # Disabled by default
+        self.append(self._upscale_button)
 
         # Separator before inpaint
         self._inpaint_separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
@@ -167,6 +177,11 @@ class Toolbar(Gtk.Box):
         if self._on_img2img:
             self._on_img2img()
 
+    def _on_upscale_clicked(self, button):
+        """Handle Upscale button click."""
+        if self._on_upscale:
+            self._on_upscale()
+
     def _on_cancel_clicked(self, button):
         """Handle Cancel button click."""
         if self._on_cancel:
@@ -241,6 +256,8 @@ class Toolbar(Gtk.Box):
             self._update_generation_buttons_sensitivity()
             self._cancel_button.set_visible(False)
             self._progress_bar.set_visible(False)
+            # Restore upscale button visibility
+            self._upscale_button.set_visible(True)
             # Restore visibility based on inpaint mode
             if self._inpaint_mode:
                 self._generate_button.set_visible(False)
@@ -260,6 +277,7 @@ class Toolbar(Gtk.Box):
             self._generate_button.set_visible(True)
             self._img2img_button.set_sensitive(False)
             self._img2img_button.set_visible(True)
+            self._upscale_button.set_sensitive(False)
             self._cancel_button.set_visible(False)
             self._progress_bar.set_visible(True)
 
@@ -268,6 +286,7 @@ class Toolbar(Gtk.Box):
             self._clear_button.set_sensitive(False)
             self._generate_button.set_visible(False)
             self._img2img_button.set_visible(False)
+            self._upscale_button.set_visible(False)
             self._inpaint_toggle.set_sensitive(False)
             self._rect_mask_button.set_visible(False)
             self._paint_mask_button.set_visible(False)
@@ -281,6 +300,7 @@ class Toolbar(Gtk.Box):
             self._clear_button.set_sensitive(False)
             self._generate_button.set_visible(False)
             self._img2img_button.set_visible(False)
+            self._upscale_button.set_visible(False)
             self._inpaint_toggle.set_sensitive(False)
             self._cancel_button.set_sensitive(False)
             self._progress_bar.set_visible(True)
@@ -346,3 +366,10 @@ class Toolbar(Gtk.Box):
         self._progress_label.set_text("")
         self._progress_bar.set_fraction(0)
         self._progress_bar.set_visible(False)
+
+    def set_upscale_enabled(self, enabled: bool, has_image: bool = True):
+        """Update upscale button sensitivity based on upscaling enabled state and image presence."""
+        self._upscale_enabled = enabled
+        # Upscale requires: upscaling enabled and an image present
+        # (does not require the SD model to be loaded)
+        self._upscale_button.set_sensitive(enabled and has_image)

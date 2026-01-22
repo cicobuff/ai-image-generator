@@ -10,6 +10,7 @@ from gi.repository import Gtk, GLib
 from src.core.config import config_manager
 from src.core.model_manager import model_manager, ModelType
 from src.core.generation_service import generation_service, GenerationState, GenerationResult
+from src.backends.upscale_backend import upscale_backend
 from src.ui.widgets.model_selector import ModelSelector
 from src.ui.widgets.vram_display import VRAMDisplay
 from src.ui.widgets.generation_params import GenerationParamsWidget
@@ -42,6 +43,7 @@ class WorkScreen(Gtk.Box):
             on_clear=self._on_clear_models,
             on_generate=self._on_generate,
             on_img2img=self._on_img2img,
+            on_upscale=self._on_upscale,
             on_cancel=self._on_cancel,
             on_inpaint_mode_changed=self._on_inpaint_mode_changed,
             on_inpaint_tool_changed=self._on_inpaint_tool_changed,
@@ -171,7 +173,9 @@ class WorkScreen(Gtk.Box):
         box.append(separator4)
 
         # Upscale settings
-        self._upscale_widget = UpscaleSettingsWidget()
+        self._upscale_widget = UpscaleSettingsWidget(
+            on_changed=self._on_upscale_settings_changed
+        )
         box.append(self._upscale_widget)
 
         return scrolled
@@ -248,6 +252,7 @@ class WorkScreen(Gtk.Box):
 
         # Update toolbar state
         self._toolbar.set_model_loaded(generation_service.is_model_loaded)
+        self._update_upscale_button_state()
 
     def _scan_models(self):
         """Scan for models in background thread."""
@@ -526,6 +531,7 @@ class WorkScreen(Gtk.Box):
 
             # Update toolbar has_image state
             self._toolbar.set_has_image(True)
+            self._update_upscale_button_state()
         else:
             self._status_bar.set_text(f"Generation failed: {result.error or 'Unknown error'}")
 
@@ -576,3 +582,116 @@ class WorkScreen(Gtk.Box):
             self._params_widget.reset_to_defaults()
             self._upscale_widget.reset_to_defaults()
             self._status_bar.set_text(f"Loaded: {path.name} (no metadata - using defaults)")
+
+        # Update upscale button state
+        self._update_upscale_button_state()
+
+    def _on_upscale_settings_changed(self):
+        """Handle upscale settings change (enabled/model changed)."""
+        self._update_upscale_button_state()
+
+    def _update_upscale_button_state(self):
+        """Update the upscale button state based on current conditions."""
+        # Check if there's an image to upscale
+        has_image = self._image_display.get_pil_image() is not None
+        # Check if upscaling is enabled and a model is selected
+        upscale_enabled = self._upscale_widget.is_enabled and self._upscale_widget.selected_model is not None
+        self._toolbar.set_upscale_enabled(upscale_enabled, has_image)
+
+    def _on_upscale(self):
+        """Handle Upscale button click."""
+        # Get the current image
+        current_image = self._image_display.get_pil_image()
+        if current_image is None:
+            self._status_bar.set_text("No image to upscale")
+            return
+
+        # Check if upscaling is enabled
+        if not self._upscale_widget.is_enabled:
+            self._status_bar.set_text("Enable upscaling first")
+            return
+
+        # Get the upscale model path
+        upscale_model_path = self._upscale_widget.selected_model_path
+        if not upscale_model_path:
+            self._status_bar.set_text("Select an upscale model first")
+            return
+
+        upscale_model_name = self._upscale_widget.selected_model_name
+        self._status_bar.set_text(f"Upscaling with {upscale_model_name}...")
+
+        # Run upscaling in background thread
+        def upscale_thread():
+            try:
+                # Load the upscale model if not already loaded or different model
+                if upscale_backend._loaded_model_path != upscale_model_path:
+                    GLib.idle_add(lambda: self._toolbar.set_progress("Loading upscale model...", 0.1))
+                    success = upscale_backend.load_model(
+                        upscale_model_path,
+                        progress_callback=lambda msg, prog: GLib.idle_add(
+                            lambda m=msg, p=prog: self._toolbar.set_progress(m, p)
+                        )
+                    )
+                    if not success:
+                        GLib.idle_add(lambda: self._on_upscale_complete(None, "Failed to load upscale model"))
+                        return
+
+                # Perform upscaling
+                GLib.idle_add(lambda: self._toolbar.set_progress("Upscaling image...", 0.5))
+                upscaled_image = upscale_backend.upscale(
+                    current_image,
+                    progress_callback=lambda msg, prog: GLib.idle_add(
+                        lambda m=msg, p=prog: self._toolbar.set_progress(m, 0.5 + prog * 0.4)
+                    )
+                )
+
+                if upscaled_image:
+                    # Save the upscaled image
+                    output_dir = self._thumbnail_gallery.get_output_directory()
+                    output_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Generate filename
+                    from datetime import datetime
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"upscaled_{timestamp}.png"
+                    output_path = output_dir / filename
+
+                    upscaled_image.save(output_path, "PNG")
+                    GLib.idle_add(lambda: self._on_upscale_complete(upscaled_image, None, output_path))
+                else:
+                    GLib.idle_add(lambda: self._on_upscale_complete(None, "Upscaling failed"))
+
+            except Exception as e:
+                print(f"Error during upscaling: {e}")
+                import traceback
+                traceback.print_exc()
+                GLib.idle_add(lambda: self._on_upscale_complete(None, str(e)))
+
+        # Set UI to generating state
+        self._toolbar.set_state(GenerationState.GENERATING)
+        self._toolbar.set_progress("Starting upscale...", 0.0)
+
+        thread = threading.Thread(target=upscale_thread, daemon=True)
+        thread.start()
+
+    def _on_upscale_complete(self, image, error, path=None):
+        """Handle upscale completion (called from main thread)."""
+        self._toolbar.set_state(GenerationState.IDLE)
+        self._toolbar.clear_progress()
+
+        if image and not error:
+            # Display the upscaled image
+            self._image_display.set_image(image)
+
+            # Add to thumbnail gallery
+            if path:
+                self._thumbnail_gallery.add_image(path, image)
+
+            scale = upscale_backend.scale
+            self._status_bar.set_text(f"Upscaled {scale}x: {path.name if path else 'image'}")
+
+            # Update toolbar has_image state
+            self._toolbar.set_has_image(True)
+            self._update_upscale_button_state()
+        else:
+            self._status_bar.set_text(f"Upscale failed: {error or 'Unknown error'}")
