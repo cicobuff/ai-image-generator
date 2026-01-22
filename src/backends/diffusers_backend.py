@@ -621,21 +621,22 @@ class DiffusersBackend:
             # Encode prompts (uses cache if prompts haven't changed)
             self._encode_prompts(params.prompt, params.negative_prompt)
 
-            # Handle seed - use CPU generator for reliability and to avoid CUDA sync overhead
+            # Handle seed
             if params.seed == -1:
-                generator = None  # Random seed
+                actual_seed = torch.randint(0, 2**32 - 1, (1,)).item()
             else:
-                generator = torch.Generator(device="cpu").manual_seed(params.seed)
+                actual_seed = params.seed
+            generator = torch.Generator(device="cpu").manual_seed(actual_seed)
 
-            # Create progress callback wrapper (only if callback provided)
+            print(f"Starting generation: {params.width}x{params.height}, {params.steps} steps (seed: {actual_seed})")
+
+            # Create progress callback wrapper
             callback_fn = None
             if progress_callback:
                 def callback_on_step_end(pipeline, step, timestep, callback_kwargs):
                     progress_callback(step + 1, params.steps)
                     return callback_kwargs
                 callback_fn = callback_on_step_end
-
-            print(f"Starting generation: {params.width}x{params.height}, {params.steps} steps")
 
             # Build generation kwargs with cached embeddings
             gen_kwargs = {
