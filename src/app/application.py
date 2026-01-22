@@ -44,6 +44,9 @@ class AIImageGeneratorApp(Gtk.Application):
             self._window.set_title(APP_NAME)
             self._window.set_default_size(1400, 900)
 
+            # Handle window close to ensure clean exit with torch.compile
+            self._window.connect("close-request", self._on_close_request)
+
             # Show appropriate screen based on config existence
             if config_manager.exists():
                 self._show_work_screen()
@@ -52,8 +55,43 @@ class AIImageGeneratorApp(Gtk.Application):
 
         self._window.present()
 
+    def _on_close_request(self, window):
+        """Handle window close request - ensures clean exit with torch.compile."""
+        import os
+
+        # Quick cleanup
+        try:
+            from src.backends.diffusers_backend import diffusers_backend
+            diffusers_backend.unload_model()
+        except Exception:
+            pass
+
+        try:
+            from src.backends.upscale_backend import upscale_backend
+            upscale_backend.unload_model()
+        except Exception:
+            pass
+
+        try:
+            gpu_manager.shutdown()
+        except Exception:
+            pass
+
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+        # Force immediate exit to avoid torch.compile hang
+        os._exit(0)
+        return True  # Won't be reached, but indicates we handled the event
+
     def do_shutdown(self):
         """Called when the application shuts down."""
+        import os
+
         # Cleanup diffusers backend (unload models, clear CUDA cache)
         try:
             from src.backends.diffusers_backend import diffusers_backend
@@ -71,16 +109,24 @@ class AIImageGeneratorApp(Gtk.Application):
         # Cleanup GPU manager
         gpu_manager.shutdown()
 
-        # Final CUDA cleanup
+        # Basic CUDA cleanup
         try:
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                torch.cuda.synchronize()
         except Exception:
             pass
 
-        Gtk.Application.do_shutdown(self)
+        # Call parent shutdown
+        try:
+            Gtk.Application.do_shutdown(self)
+        except Exception:
+            pass
+
+        # Force exit to avoid hanging on torch.compile cleanup
+        # This is necessary because CUDA graphs from torch.compile
+        # can prevent clean process termination
+        os._exit(0)
 
     def _load_css(self):
         """Load application CSS styles."""

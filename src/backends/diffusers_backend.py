@@ -616,6 +616,7 @@ class DiffusersBackend:
 
     def unload_model(self) -> None:
         """Unload the current model and free VRAM."""
+
         if self._pipeline is not None:
             del self._pipeline
             self._pipeline = None

@@ -121,18 +121,18 @@ class WorkScreen(Gtk.Box):
         self._checkpoint_selector = ModelSelector(
             label="Checkpoint:",
             model_type=ModelType.CHECKPOINT,
-            on_changed=self._on_checkpoint_changed,
         )
         box.append(self._checkpoint_selector)
 
-        # Precompile button
-        self._precompile_button = Gtk.Button(label="Precompile Model (torch.compile)")
-        self._precompile_button.set_tooltip_text(
-            "Compile the selected model for faster generation. "
-            "This takes a few minutes but speeds up all future generations."
+        # Optimize checkbox for torch.compile
+        self._optimize_checkbox = Gtk.CheckButton(label="Optimize (torch.compile)")
+        self._optimize_checkbox.set_tooltip_text(
+            "When enabled, uses torch.compile for faster generation. "
+            "First generation will take longer to compile, but subsequent generations will be much faster. "
+            "Compiled kernels are cached and reused across sessions."
         )
-        self._precompile_button.connect("clicked", self._on_precompile_clicked)
-        box.append(self._precompile_button)
+        self._optimize_checkbox.set_active(True)  # Default to enabled
+        box.append(self._optimize_checkbox)
 
         # VAE selector
         self._vae_selector = ModelSelector(
@@ -286,45 +286,6 @@ class WorkScreen(Gtk.Box):
         # Also scan for LoRAs
         self._lora_panel.scan_loras()
         self._status_bar.set_text("Ready")
-        # Update precompile button state
-        self._update_precompile_button_state()
-
-    def _on_checkpoint_changed(self, model):
-        """Called when checkpoint selection changes."""
-        self._update_precompile_button_state()
-
-    def _update_precompile_button_state(self):
-        """Update the precompile button label based on compiled cache status."""
-        # Guard against being called before UI is fully built
-        if not hasattr(self, '_precompile_button') or not hasattr(self, '_params_widget'):
-            return
-
-        if not model_manager.loaded.checkpoint:
-            self._precompile_button.set_label("Precompile Model (torch.compile)")
-            self._precompile_button.remove_css_class("suggested-action")
-            return
-
-        # Get current params for resolution
-        params = self._params_widget.get_params("", "")
-        width, height = params.width, params.height
-
-        checkpoint_path = str(model_manager.loaded.checkpoint.path)
-        has_compiled = diffusers_backend.has_compiled_cache(checkpoint_path, width, height)
-
-        if has_compiled:
-            self._precompile_button.set_label(f"Precompiled ({width}x{height})")
-            self._precompile_button.add_css_class("suggested-action")
-            self._precompile_button.set_tooltip_text(
-                f"Model has been precompiled for {width}x{height}. "
-                "Click to recompile if needed."
-            )
-        else:
-            self._precompile_button.set_label("Precompile Model (torch.compile)")
-            self._precompile_button.remove_css_class("suggested-action")
-            self._precompile_button.set_tooltip_text(
-                "Compile the selected model for faster generation. "
-                "This takes a few minutes but speeds up all future generations."
-            )
 
     def _on_load_models(self):
         """Handle Load Models button click."""
@@ -336,74 +297,25 @@ class WorkScreen(Gtk.Box):
         params = self._params_widget.get_params("", "")
         width, height = params.width, params.height
 
-        # Check if we have a compiled cache for this model+resolution
+        # Check if optimize is enabled and we have a compiled cache
+        use_compiled = self._optimize_checkbox.get_active()
         checkpoint_path = str(model_manager.loaded.checkpoint.path)
-        has_compiled = diffusers_backend.has_compiled_cache(checkpoint_path, width, height)
 
-        if has_compiled:
-            self._status_bar.set_text(f"Loading model with compiled cache for {width}x{height}...")
+        if use_compiled:
+            has_compiled = diffusers_backend.has_compiled_cache(checkpoint_path, width, height)
+            if has_compiled:
+                self._status_bar.set_text(f"Loading optimized model for {width}x{height}...")
+            else:
+                self._status_bar.set_text("Loading model...")
+                use_compiled = False  # No cache, load without compile for now
         else:
             self._status_bar.set_text("Loading model...")
 
         generation_service.load_models(
-            use_compiled=has_compiled,
+            use_compiled=use_compiled,
             target_width=width,
             target_height=height,
         )
-
-    def _on_precompile_clicked(self, button):
-        """Handle Precompile Model button click."""
-        if not model_manager.loaded.checkpoint:
-            self._status_bar.set_text("Please select a checkpoint first")
-            return
-
-        # Get the target size for compilation (use current params)
-        params = self._params_widget.get_params("", "")
-        width, height = params.width, params.height
-
-        self._status_bar.set_text(f"Starting precompilation for {width}x{height}...")
-        self._precompile_button.set_sensitive(False)
-
-        def precompile_thread():
-            try:
-                success = diffusers_backend.compile_model(
-                    checkpoint_path=str(model_manager.loaded.checkpoint.path),
-                    model_type=model_manager.loaded.checkpoint.components.model_type,
-                    vae_path=str(model_manager.loaded.vae.path) if model_manager.loaded.vae else None,
-                    target_width=width,
-                    target_height=height,
-                    progress_callback=lambda msg, prog: GLib.idle_add(
-                        self._on_precompile_progress, msg, prog
-                    ),
-                )
-                GLib.idle_add(self._on_precompile_complete, success)
-            except Exception as e:
-                print(f"Error during precompilation: {e}")
-                import traceback
-                traceback.print_exc()
-                GLib.idle_add(self._on_precompile_complete, False, str(e))
-
-        thread = threading.Thread(target=precompile_thread, daemon=True)
-        thread.start()
-
-    def _on_precompile_progress(self, message: str, progress: float):
-        """Handle precompile progress update."""
-        self._status_bar.set_text(message)
-        self._toolbar.set_progress(message, progress)
-
-    def _on_precompile_complete(self, success: bool, error: str = None):
-        """Handle precompile completion."""
-        self._precompile_button.set_sensitive(True)
-        self._toolbar.clear_progress()
-
-        if success:
-            self._status_bar.set_text("Model precompiled successfully! Future generations will be faster.")
-            # Model is now loaded and compiled, update toolbar state
-            self._toolbar.set_model_loaded(True)
-            # Update precompile button to show compiled status
-            self._update_precompile_button_state()
-        else:
-            self._status_bar.set_text(f"Precompilation failed: {error or 'Unknown error'}")
 
     def _on_clear_models(self):
         """Handle Clear Models button click."""
@@ -449,6 +361,139 @@ class WorkScreen(Gtk.Box):
 
         return False
 
+    def _needs_optimization(self) -> bool:
+        """Check if optimization (torch.compile) is needed."""
+        if not self._optimize_checkbox.get_active():
+            return False
+
+        if not model_manager.loaded.checkpoint:
+            return False
+
+        # Check if model is already compiled
+        if diffusers_backend.is_compiled:
+            return False
+
+        return True
+
+    def _ensure_model_ready(self, pending_action: str) -> bool:
+        """
+        Ensure model is loaded and optimized if needed.
+
+        Args:
+            pending_action: The action to perform after model is ready
+                           ("generate", "img2img", "inpaint")
+
+        Returns:
+            True if generation can proceed immediately, False if waiting for load/compile
+        """
+        params = self._params_widget.get_params("", "")
+        width, height = params.width, params.height
+        checkpoint_path = str(model_manager.loaded.checkpoint.path)
+        optimize_enabled = self._optimize_checkbox.get_active()
+
+        # Check if we need to load or reload the model
+        needs_reload = self._needs_model_reload()
+
+        if needs_reload:
+            if optimize_enabled:
+                has_compiled = diffusers_backend.has_compiled_cache(checkpoint_path, width, height)
+                if has_compiled:
+                    # Load with existing compiled cache
+                    self._pending_generation = pending_action
+                    self._status_bar.set_text(f"Loading optimized model for {width}x{height}...")
+                    generation_service.load_models(
+                        use_compiled=True,
+                        target_width=width,
+                        target_height=height,
+                    )
+                    return False
+                else:
+                    # Need to compile first
+                    self._pending_generation = pending_action
+                    self._run_optimization_then_generate(width, height)
+                    return False
+            else:
+                # Load without optimization
+                self._pending_generation = pending_action
+                self._on_load_models()
+                return False
+
+        # Model is loaded, check if we need optimization
+        if optimize_enabled and not diffusers_backend.is_compiled:
+            has_compiled = diffusers_backend.has_compiled_cache(checkpoint_path, width, height)
+            if has_compiled:
+                # Reload with compiled cache
+                self._pending_generation = pending_action
+                self._status_bar.set_text(f"Loading optimized model for {width}x{height}...")
+                generation_service.load_models(
+                    use_compiled=True,
+                    target_width=width,
+                    target_height=height,
+                )
+                return False
+            else:
+                # Need to compile
+                self._pending_generation = pending_action
+                self._run_optimization_then_generate(width, height)
+                return False
+
+        # Model is ready
+        return True
+
+    def _run_optimization_then_generate(self, width: int, height: int):
+        """Run torch.compile optimization, then proceed with pending generation."""
+        self._status_bar.set_text(f"Optimizing model for {width}x{height} (first time only)...")
+        self._toolbar.set_state(GenerationState.LOADING)
+
+        def compile_thread():
+            try:
+                success = diffusers_backend.compile_model(
+                    checkpoint_path=str(model_manager.loaded.checkpoint.path),
+                    model_type=model_manager.loaded.checkpoint.components.model_type,
+                    vae_path=str(model_manager.loaded.vae.path) if model_manager.loaded.vae else None,
+                    target_width=width,
+                    target_height=height,
+                    progress_callback=lambda msg, prog: GLib.idle_add(
+                        self._on_optimization_progress, msg, prog
+                    ),
+                )
+                GLib.idle_add(self._on_optimization_complete, success)
+            except Exception as e:
+                print(f"Error during optimization: {e}")
+                import traceback
+                traceback.print_exc()
+                GLib.idle_add(self._on_optimization_complete, False, str(e))
+
+        thread = threading.Thread(target=compile_thread, daemon=True)
+        thread.start()
+
+    def _on_optimization_progress(self, message: str, progress: float):
+        """Handle optimization progress update."""
+        self._status_bar.set_text(message)
+        self._toolbar.set_progress(message, progress)
+
+    def _on_optimization_complete(self, success: bool, error: str = None):
+        """Handle optimization completion."""
+        self._toolbar.clear_progress()
+        self._toolbar.set_state(GenerationState.IDLE)
+
+        if success:
+            self._status_bar.set_text("Optimization complete, starting generation...")
+            self._toolbar.set_model_loaded(True)
+
+            # Execute the pending generation
+            pending = self._pending_generation
+            self._pending_generation = None
+            if pending == "generate":
+                self._do_generate()
+            elif pending == "img2img":
+                self._do_img2img()
+            elif pending == "inpaint":
+                self._do_generate_inpaint()
+        else:
+            self._pending_generation = None
+            self._status_bar.set_text(f"Optimization failed: {error or 'Unknown error'}")
+
     def _on_generate(self):
         """Handle Generate button click."""
         # Check if a checkpoint is selected
@@ -461,10 +506,8 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please enter a positive prompt")
             return
 
-        # Auto-load models if not loaded or if selected model changed
-        if self._needs_model_reload():
-            self._pending_generation = "generate"
-            self._on_load_models()
+        # Ensure model is loaded and optimized if needed
+        if not self._ensure_model_ready("generate"):
             return
 
         self._do_generate()
@@ -516,10 +559,8 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please enter a positive prompt")
             return
 
-        # Auto-load models if not loaded or if selected model changed
-        if self._needs_model_reload():
-            self._pending_generation = "img2img"
-            self._on_load_models()
+        # Ensure model is loaded and optimized if needed
+        if not self._ensure_model_ready("img2img"):
             return
 
         self._do_img2img()
@@ -624,10 +665,8 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please enter a positive prompt")
             return
 
-        # Auto-load models if not loaded or if selected model changed
-        if self._needs_model_reload():
-            self._pending_generation = "inpaint"
-            self._on_load_models()
+        # Ensure model is loaded and optimized if needed
+        if not self._ensure_model_ready("inpaint"):
             return
 
         self._do_generate_inpaint()
