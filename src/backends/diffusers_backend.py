@@ -74,6 +74,8 @@ class DiffusersBackend:
         self._loaded_vae: Optional[str] = None
         self._gpu_indices: list[int] = [0]
         self._device: str = "cuda:0" if torch.cuda.is_available() else "cpu"
+        # LoRA tracking
+        self._loaded_loras: list[tuple[str, float]] = []  # List of (path, weight) tuples
 
     @property
     def is_loaded(self) -> bool:
@@ -303,12 +305,137 @@ class DiffusersBackend:
         self._loaded_checkpoint = None
         self._loaded_vae = None
         self._is_sdxl = False
+        self._loaded_loras = []
 
         # Force garbage collection and CUDA cache clear
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
+
+    def load_loras(
+        self,
+        loras: list[tuple[str, str, float]],  # List of (path, name, weight) tuples
+        progress_callback: Optional[Callable[[str, float], None]] = None,
+    ) -> bool:
+        """
+        Load and apply LoRAs to the pipeline.
+
+        Args:
+            loras: List of (path, name, weight) tuples for LoRAs to load
+            progress_callback: Callback for progress updates
+
+        Returns:
+            True if successful
+        """
+        if not self.is_loaded:
+            print("Cannot load LoRAs: no model loaded")
+            return False
+
+        if not loras:
+            # No LoRAs to load, unload any existing ones
+            self.unload_loras()
+            return True
+
+        try:
+            # First, unload any existing LoRAs
+            self.unload_loras(notify=False)
+
+            total = len(loras)
+            adapter_names = []
+            adapter_weights = []
+
+            for i, (lora_path, lora_name, weight) in enumerate(loras):
+                if progress_callback:
+                    progress_callback(f"Loading LoRA {i + 1}/{total}: {lora_name}", (i / total) * 0.5)
+
+                # Create a unique adapter name based on the LoRA file name
+                adapter_name = f"lora_{i}_{Path(lora_path).stem}"
+
+                print(f"Loading LoRA: {lora_name} (weight: {weight}) from {lora_path}")
+
+                # Load the LoRA weights
+                self._pipeline.load_lora_weights(
+                    lora_path,
+                    adapter_name=adapter_name,
+                )
+
+                adapter_names.append(adapter_name)
+                adapter_weights.append(weight)
+                self._loaded_loras.append((lora_path, weight))
+
+            # Set the adapter weights
+            if adapter_names:
+                if progress_callback:
+                    progress_callback("Applying LoRA weights...", 0.8)
+
+                # Set active adapters with weights
+                self._pipeline.set_adapters(adapter_names, adapter_weights=adapter_weights)
+
+                # Also apply to img2img and inpaint pipelines if they exist
+                # Note: They share the same UNet, so LoRAs are already loaded
+                # But we need to set adapters on them too
+                if self._img2img_pipeline is not None:
+                    try:
+                        self._img2img_pipeline.set_adapters(adapter_names, adapter_weights=adapter_weights)
+                    except Exception:
+                        pass
+
+                if self._inpaint_pipeline is not None:
+                    try:
+                        self._inpaint_pipeline.set_adapters(adapter_names, adapter_weights=adapter_weights)
+                    except Exception:
+                        pass
+
+            if progress_callback:
+                progress_callback(f"Loaded {len(loras)} LoRA(s)", 1.0)
+
+            print(f"Successfully loaded {len(loras)} LoRA(s)")
+            return True
+
+        except Exception as e:
+            print(f"Error loading LoRAs: {e}")
+            import traceback
+            traceback.print_exc()
+            # Try to unload any partially loaded LoRAs
+            self.unload_loras()
+            return False
+
+    def unload_loras(self, notify: bool = True) -> None:
+        """Unload all currently loaded LoRAs."""
+        if not self.is_loaded or not self._loaded_loras:
+            self._loaded_loras = []
+            return
+
+        try:
+            # Unload all LoRA adapters
+            self._pipeline.unload_lora_weights()
+
+            if self._img2img_pipeline is not None:
+                try:
+                    self._img2img_pipeline.unload_lora_weights()
+                except Exception:
+                    pass
+
+            if self._inpaint_pipeline is not None:
+                try:
+                    self._inpaint_pipeline.unload_lora_weights()
+                except Exception:
+                    pass
+
+            if notify:
+                print("Unloaded all LoRAs")
+        except Exception as e:
+            # This can happen if no LoRAs were ever loaded, which is fine
+            if "PEFT" not in str(e):
+                print(f"Error unloading LoRAs: {e}")
+
+        self._loaded_loras = []
+
+    @property
+    def loaded_loras(self) -> list[tuple[str, float]]:
+        """Get list of currently loaded LoRAs as (path, weight) tuples."""
+        return self._loaded_loras.copy()
 
     def _get_scheduler(self, sampler: str) -> Any:
         """Get the appropriate scheduler for the given sampler name."""

@@ -20,6 +20,7 @@ from src.ui.widgets.toolbar import Toolbar
 from src.ui.widgets.upscale_settings import UpscaleSettingsWidget
 from src.ui.widgets.toolbar import InpaintTool
 from src.ui.widgets.image_display import MaskTool
+from src.ui.widgets.lora_selector import LoRASelectorPanel
 from src.utils.metadata import load_metadata_from_image
 
 
@@ -157,6 +158,18 @@ class WorkScreen(Gtk.Box):
         separator3.set_margin_bottom(8)
         box.append(separator3)
 
+        # LoRA selector panel
+        self._lora_panel = LoRASelectorPanel(
+            on_changed=self._on_lora_changed,
+        )
+        box.append(self._lora_panel)
+
+        # Separator
+        separator4 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        separator4.set_margin_top(8)
+        separator4.set_margin_bottom(8)
+        box.append(separator4)
+
         # Upscale settings
         self._upscale_widget = UpscaleSettingsWidget()
         box.append(self._upscale_widget)
@@ -251,6 +264,8 @@ class WorkScreen(Gtk.Box):
 
     def _on_models_scanned(self):
         """Called when model scanning is complete."""
+        # Also scan for LoRAs
+        self._lora_panel.scan_loras()
         self._status_bar.set_text("Ready")
 
     def _on_load_models(self):
@@ -273,6 +288,20 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text(f"Output directory: {directory.name or 'root'}")
         else:
             self._status_bar.set_text(f"New directory: {directory.name} (will be created on save)")
+
+    def _on_lora_changed(self):
+        """Handle LoRA selection change."""
+        active_loras = self._lora_panel.get_active_loras()
+        if active_loras:
+            names = [lora.name for lora in active_loras]
+            self._status_bar.set_text(f"LoRAs: {', '.join(names)}")
+        else:
+            self._status_bar.set_text("No LoRAs selected")
+
+    def _get_active_loras(self) -> list:
+        """Get list of active LoRAs as (path, name, weight) tuples."""
+        active_loras = self._lora_panel.get_active_loras()
+        return [(lora.path, lora.name, lora.weight) for lora in active_loras]
 
     def _on_generate(self):
         """Handle Generate button click."""
@@ -299,12 +328,16 @@ class WorkScreen(Gtk.Box):
         # Get output directory from gallery
         output_dir = self._thumbnail_gallery.get_output_directory()
 
+        # Get active LoRAs
+        loras = self._get_active_loras()
+
         generation_service.generate(
             params,
             upscale_enabled=upscale_enabled,
             upscale_model_path=upscale_model_path,
             upscale_model_name=upscale_model_name,
             output_dir=output_dir,
+            loras=loras if loras else None,
         )
 
     def _on_img2img(self):
@@ -339,6 +372,9 @@ class WorkScreen(Gtk.Box):
         # Get output directory from gallery
         output_dir = self._thumbnail_gallery.get_output_directory()
 
+        # Get active LoRAs
+        loras = self._get_active_loras()
+
         generation_service.generate_img2img(
             params,
             input_image=input_image,
@@ -347,6 +383,7 @@ class WorkScreen(Gtk.Box):
             upscale_model_path=upscale_model_path,
             upscale_model_name=upscale_model_name,
             output_dir=output_dir,
+            loras=loras if loras else None,
         )
 
     def _on_cancel(self):
@@ -430,6 +467,9 @@ class WorkScreen(Gtk.Box):
         # Get output directory from gallery
         output_dir = self._thumbnail_gallery.get_output_directory()
 
+        # Get active LoRAs
+        loras = self._get_active_loras()
+
         generation_service.generate_inpaint(
             params,
             input_image=original_image,
@@ -439,6 +479,7 @@ class WorkScreen(Gtk.Box):
             upscale_model_path=upscale_model_path,
             upscale_model_name=upscale_model_name,
             output_dir=output_dir,
+            loras=loras if loras else None,
         )
 
     def _on_state_changed(self, state: GenerationState):

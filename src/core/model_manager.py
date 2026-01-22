@@ -16,6 +16,7 @@ class ModelType(Enum):
     VAE = "vae"
     CLIP = "clip"
     UPSCALE = "upscale"
+    LORA = "lora"
 
 
 @dataclass
@@ -79,6 +80,7 @@ class ModelManager:
         self._vaes: list[ModelInfo] = []
         self._clips: list[ModelInfo] = []
         self._upscalers: list[ModelInfo] = []
+        self._loras: list[ModelInfo] = []
         self._loaded = LoadedModels()
         self._on_models_changed: list[Callable[[], None]] = []
 
@@ -101,6 +103,11 @@ class ModelManager:
     def upscalers(self) -> list[ModelInfo]:
         """Get list of available upscale models."""
         return self._upscalers
+
+    @property
+    def loras(self) -> list[ModelInfo]:
+        """Get list of available LoRA models."""
+        return self._loras
 
     @property
     def loaded(self) -> LoadedModels:
@@ -129,6 +136,7 @@ class ModelManager:
     VAE_DIRS = {"vae", "vaes"}
     CLIP_DIRS = {"clip", "text_encoder", "text_encoders"}
     UPSCALE_DIRS = {"upscale", "upscalers", "esrgan", "realesrgan"}
+    LORA_DIRS = {"loras", "lora"}
 
     def scan_models(self, progress_callback: Optional[Callable[[str], None]] = None) -> None:
         """
@@ -144,6 +152,7 @@ class ModelManager:
         self._vaes.clear()
         self._clips.clear()
         self._upscalers.clear()
+        self._loras.clear()
 
         if not models_path.exists():
             if progress_callback:
@@ -163,17 +172,21 @@ class ModelManager:
         # Scan upscale directories
         self._scan_upscale_models(models_path, progress_callback)
 
+        # Scan LoRA directories
+        self._scan_lora_models(models_path, progress_callback)
+
         # Sort models by name
         self._checkpoints.sort(key=lambda m: m.name.lower())
         self._vaes.sort(key=lambda m: m.name.lower())
         self._clips.sort(key=lambda m: m.name.lower())
         self._upscalers.sort(key=lambda m: m.name.lower())
+        self._loras.sort(key=lambda m: m.name.lower())
 
         if progress_callback:
             progress_callback(
                 f"Found {len(self._checkpoints)} checkpoints, "
                 f"{len(self._vaes)} VAEs, {len(self._clips)} CLIPs, "
-                f"{len(self._upscalers)} upscalers"
+                f"{len(self._upscalers)} upscalers, {len(self._loras)} LoRAs"
             )
 
         self._notify_models_changed()
@@ -294,6 +307,30 @@ class ModelManager:
                     except Exception as e:
                         print(f"Error scanning upscale model {path}: {e}")
 
+    def _scan_lora_models(self, models_path: Path, progress_callback: Optional[Callable[[str], None]] = None) -> None:
+        """Scan for LoRA models in specific directories."""
+        # LoRA models are typically .safetensors, .pt, .bin
+        lora_extensions = {".safetensors", ".pt", ".bin", ".ckpt"}
+
+        for subdir in self._get_scan_directories(models_path, self.LORA_DIRS):
+            for ext in lora_extensions:
+                for path in subdir.rglob(f"*{ext}"):
+                    if progress_callback:
+                        progress_callback(f"Scanning LoRA: {path.name}")
+
+                    try:
+                        size = path.stat().st_size
+                        model_info = ModelInfo(
+                            path=path,
+                            name=path.stem,
+                            model_type=ModelType.LORA,
+                            components=ModelComponents(),
+                            size_bytes=size,
+                        )
+                        self._loras.append(model_info)
+                    except Exception as e:
+                        print(f"Error scanning LoRA model {path}: {e}")
+
     def select_checkpoint(self, model: Optional[ModelInfo]) -> None:
         """Select a checkpoint model for loading."""
         self._loaded.checkpoint = model
@@ -330,6 +367,13 @@ class ModelManager:
     def get_upscaler_by_name(self, name: str) -> Optional[ModelInfo]:
         """Find an upscaler by name."""
         for model in self._upscalers:
+            if model.name == name:
+                return model
+        return None
+
+    def get_lora_by_name(self, name: str) -> Optional[ModelInfo]:
+        """Find a LoRA by name."""
+        for model in self._loras:
             if model.name == name:
                 return model
         return None

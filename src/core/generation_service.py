@@ -19,6 +19,10 @@ from src.utils.constants import OUTPUT_FORMAT
 from src.utils.metadata import GenerationMetadata, save_image_with_metadata
 
 
+# Type alias for LoRA info: (path, name, weight)
+LoRAInfo = tuple[str, str, float]
+
+
 class GenerationState(Enum):
     """State of the generation service."""
     IDLE = "idle"
@@ -190,6 +194,7 @@ class GenerationService:
         upscale_model_path: Optional[str] = None,
         upscale_model_name: str = "",
         output_dir: Optional[Path] = None,
+        loras: Optional[list[LoRAInfo]] = None,
     ) -> None:
         """Start image generation in background thread.
 
@@ -199,6 +204,7 @@ class GenerationService:
             upscale_model_path: Path to the upscale model
             upscale_model_name: Name of the upscale model (for metadata)
             output_dir: Optional output directory for saving images
+            loras: Optional list of LoRAs to apply as (path, name, weight) tuples
         """
         if self.is_busy:
             return
@@ -215,6 +221,16 @@ class GenerationService:
         def generate_thread():
             try:
                 print(f"Generation thread started")
+
+                # Load LoRAs if specified
+                if loras:
+                    self._notify_progress("Loading LoRAs...", 0.0)
+                    if not diffusers_backend.load_loras(loras, self._notify_progress):
+                        print("Warning: Failed to load some LoRAs")
+                else:
+                    # Unload any previously loaded LoRAs
+                    diffusers_backend.unload_loras()
+
                 # Get actual seed
                 actual_seed = diffusers_backend.get_actual_seed(params)
                 if params.seed == -1:
@@ -313,6 +329,7 @@ class GenerationService:
         upscale_model_path: Optional[str] = None,
         upscale_model_name: str = "",
         output_dir: Optional[Path] = None,
+        loras: Optional[list[LoRAInfo]] = None,
     ) -> None:
         """Start img2img generation in background thread.
 
@@ -324,6 +341,7 @@ class GenerationService:
             upscale_model_path: Path to the upscale model
             upscale_model_name: Name of the upscale model (for metadata)
             output_dir: Optional output directory for saving images
+            loras: Optional list of LoRAs to apply as (path, name, weight) tuples
         """
         if self.is_busy:
             return
@@ -346,6 +364,16 @@ class GenerationService:
         def generate_thread():
             try:
                 print(f"Img2img generation thread started")
+
+                # Load LoRAs if specified
+                if loras:
+                    self._notify_progress("Loading LoRAs...", 0.0)
+                    if not diffusers_backend.load_loras(loras, self._notify_progress):
+                        print("Warning: Failed to load some LoRAs")
+                else:
+                    # Unload any previously loaded LoRAs
+                    diffusers_backend.unload_loras()
+
                 # Get actual seed
                 actual_seed = diffusers_backend.get_actual_seed(params)
                 if params.seed == -1:
@@ -451,6 +479,7 @@ class GenerationService:
         upscale_model_path: Optional[str] = None,
         upscale_model_name: str = "",
         output_dir: Optional[Path] = None,
+        loras: Optional[list[LoRAInfo]] = None,
     ) -> None:
         """Start inpaint generation in background thread.
 
@@ -463,6 +492,7 @@ class GenerationService:
             upscale_model_path: Path to the upscale model
             upscale_model_name: Name of the upscale model (for metadata)
             output_dir: Optional output directory for saving images
+            loras: Optional list of LoRAs to apply as (path, name, weight) tuples
         """
         if self.is_busy:
             return
@@ -491,6 +521,16 @@ class GenerationService:
         def generate_thread():
             try:
                 print(f"Inpaint generation thread started")
+
+                # Load LoRAs if specified
+                if loras:
+                    self._notify_progress("Loading LoRAs...", 0.0)
+                    if not diffusers_backend.load_loras(loras, self._notify_progress):
+                        print("Warning: Failed to load some LoRAs")
+                else:
+                    # Unload any previously loaded LoRAs
+                    diffusers_backend.unload_loras()
+
                 # Get actual seed
                 actual_seed = diffusers_backend.get_actual_seed(params)
                 if params.seed == -1:
