@@ -289,6 +289,170 @@ class DiffusersBackend:
                 progress_callback(f"Error: {e}", 0.0)
             return False
 
+    def compile_model(
+        self,
+        checkpoint_path: str,
+        model_type: str = "sdxl",
+        vae_path: Optional[str] = None,
+        target_width: int = 1024,
+        target_height: int = 1024,
+        progress_callback: Optional[Callable[[str, float], None]] = None,
+    ) -> bool:
+        """
+        Compile a model using torch.compile and run warm-up to cache compiled kernels.
+
+        This uses PyTorch's persistent cache to store compiled kernels, so subsequent
+        loads of the same model will be faster.
+
+        Args:
+            checkpoint_path: Path to the checkpoint file
+            model_type: Type of model ("sdxl", "sd15", "sd")
+            vae_path: Optional path to separate VAE
+            target_width: Width for warm-up generation (to compile for this size)
+            target_height: Height for warm-up generation (to compile for this size)
+            progress_callback: Callback for progress updates (message, progress 0-1)
+
+        Returns:
+            True if compilation succeeded
+        """
+        import os
+        import hashlib
+
+        try:
+            # Set up persistent torch.compile cache directory
+            cache_base = Path(checkpoint_path).parent.parent / "compiled"
+            cache_base.mkdir(parents=True, exist_ok=True)
+
+            # Create a unique cache key based on model path and size
+            cache_key = hashlib.md5(
+                f"{checkpoint_path}_{target_width}x{target_height}".encode()
+            ).hexdigest()[:12]
+
+            cache_dir = cache_base / cache_key
+            cache_dir.mkdir(parents=True, exist_ok=True)
+
+            # Set environment variables for persistent cache
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(cache_dir)
+            os.environ["TORCH_COMPILE_CACHE_DIR"] = str(cache_dir)
+
+            _log(f"Compilation cache directory: {cache_dir}")
+
+            if progress_callback:
+                progress_callback("Loading model for compilation...", 0.1)
+
+            # Load the model first
+            success = self.load_model(
+                checkpoint_path=checkpoint_path,
+                model_type=model_type,
+                vae_path=vae_path,
+                progress_callback=lambda msg, prog: (
+                    progress_callback(msg, 0.1 + prog * 0.3) if progress_callback else None
+                ),
+            )
+
+            if not success:
+                _log("Failed to load model for compilation")
+                return False
+
+            if progress_callback:
+                progress_callback("Applying torch.compile to UNet...", 0.45)
+
+            # Apply torch.compile to the UNet (the main computation bottleneck)
+            _log("Applying torch.compile to UNet (mode=max-autotune, fullgraph=False)...")
+
+            # Use max-autotune for best performance, disable fullgraph for compatibility
+            self._pipeline.unet = torch.compile(
+                self._pipeline.unet,
+                mode="max-autotune",
+                fullgraph=False,
+            )
+
+            _log("torch.compile applied to UNet")
+
+            if progress_callback:
+                progress_callback("Running warm-up generation (this triggers compilation)...", 0.5)
+
+            # Run a warm-up generation to trigger compilation
+            # This is where the actual compilation happens and gets cached
+            _log(f"Starting warm-up generation at {target_width}x{target_height}...")
+
+            # Use a simple prompt for warm-up
+            warmup_prompt = "a test image"
+            warmup_negative = ""
+
+            # Encode prompts
+            self._encode_prompts(warmup_prompt, warmup_negative)
+
+            # Create generator for reproducibility
+            generator = torch.Generator(device="cpu").manual_seed(12345)
+
+            # Build generation kwargs
+            # IMPORTANT: Use guidance_scale > 1.0 to trigger CFG which doubles batch size
+            # This ensures compilation happens for the same shapes used in real generation
+            gen_kwargs = {
+                "width": target_width,
+                "height": target_height,
+                "num_inference_steps": 4,  # Minimal steps for warm-up
+                "guidance_scale": 7.0,  # Use realistic CFG to trigger batch doubling
+                "generator": generator,
+            }
+
+            # Use cached embeddings
+            if self._is_sdxl:
+                gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
+                gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
+                gen_kwargs["pooled_prompt_embeds"] = self._cached_pooled_prompt_embeds
+                gen_kwargs["negative_pooled_prompt_embeds"] = self._cached_negative_pooled_prompt_embeds
+            else:
+                gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
+                if self._cached_negative_prompt_embeds is not None:
+                    gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
+
+            # Track compilation progress
+            compilation_steps = 0
+            def warmup_callback(pipeline, step, timestep, callback_kwargs):
+                nonlocal compilation_steps
+                compilation_steps += 1
+                if progress_callback:
+                    # Compilation progress from 0.5 to 0.95
+                    prog = 0.5 + (compilation_steps / 4) * 0.45
+                    progress_callback(f"Compiling... (step {compilation_steps}/4)", prog)
+                return callback_kwargs
+
+            gen_kwargs["callback_on_step_end"] = warmup_callback
+
+            _log("Calling pipeline for warm-up (compilation will happen now)...")
+            start_time = datetime.now()
+
+            # This call triggers the actual compilation
+            _ = self._pipeline(**gen_kwargs)
+
+            elapsed = (datetime.now() - start_time).total_seconds()
+            _log(f"Warm-up generation complete in {elapsed:.1f}s")
+
+            # Clear the warm-up prompt cache so user prompts work correctly
+            self._clear_prompt_cache()
+
+            # Sync CUDA
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+
+            if progress_callback:
+                progress_callback("Model compiled successfully!", 1.0)
+
+            _log(f"Model compilation complete. Cache saved to: {cache_dir}")
+            _log("The compiled model is now loaded and ready for fast generation.")
+
+            return True
+
+        except Exception as e:
+            _log(f"Error during model compilation: {e}")
+            import traceback
+            traceback.print_exc()
+            if progress_callback:
+                progress_callback(f"Compilation error: {e}", 0.0)
+            return False
+
     def _enable_optimizations(
         self,
         progress_callback: Optional[Callable[[str, float], None]] = None,

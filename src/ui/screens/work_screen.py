@@ -124,6 +124,15 @@ class WorkScreen(Gtk.Box):
         )
         box.append(self._checkpoint_selector)
 
+        # Precompile button
+        self._precompile_button = Gtk.Button(label="Precompile Model (torch.compile)")
+        self._precompile_button.set_tooltip_text(
+            "Compile the selected model for faster generation. "
+            "This takes a few minutes but speeds up all future generations."
+        )
+        self._precompile_button.connect("clicked", self._on_precompile_clicked)
+        box.append(self._precompile_button)
+
         # VAE selector
         self._vae_selector = ModelSelector(
             label="VAE (optional):",
@@ -284,6 +293,58 @@ class WorkScreen(Gtk.Box):
             return
 
         generation_service.load_models()
+
+    def _on_precompile_clicked(self, button):
+        """Handle Precompile Model button click."""
+        if not model_manager.loaded.checkpoint:
+            self._status_bar.set_text("Please select a checkpoint first")
+            return
+
+        # Get the target size for compilation (use current params)
+        params = self._params_widget.get_params("", "")
+        width, height = params.width, params.height
+
+        self._status_bar.set_text(f"Starting precompilation for {width}x{height}...")
+        self._precompile_button.set_sensitive(False)
+
+        def precompile_thread():
+            try:
+                success = diffusers_backend.compile_model(
+                    checkpoint_path=str(model_manager.loaded.checkpoint.path),
+                    model_type=model_manager.loaded.checkpoint.components.model_type,
+                    vae_path=str(model_manager.loaded.vae.path) if model_manager.loaded.vae else None,
+                    target_width=width,
+                    target_height=height,
+                    progress_callback=lambda msg, prog: GLib.idle_add(
+                        self._on_precompile_progress, msg, prog
+                    ),
+                )
+                GLib.idle_add(self._on_precompile_complete, success)
+            except Exception as e:
+                print(f"Error during precompilation: {e}")
+                import traceback
+                traceback.print_exc()
+                GLib.idle_add(self._on_precompile_complete, False, str(e))
+
+        thread = threading.Thread(target=precompile_thread, daemon=True)
+        thread.start()
+
+    def _on_precompile_progress(self, message: str, progress: float):
+        """Handle precompile progress update."""
+        self._status_bar.set_text(message)
+        self._toolbar.set_progress(message, progress)
+
+    def _on_precompile_complete(self, success: bool, error: str = None):
+        """Handle precompile completion."""
+        self._precompile_button.set_sensitive(True)
+        self._toolbar.clear_progress()
+
+        if success:
+            self._status_bar.set_text("Model precompiled successfully! Future generations will be faster.")
+            # Model is now loaded and compiled, update toolbar state
+            self._toolbar.set_model_loaded(True)
+        else:
+            self._status_bar.set_text(f"Precompilation failed: {error or 'Unknown error'}")
 
     def _on_clear_models(self):
         """Handle Clear Models button click."""
