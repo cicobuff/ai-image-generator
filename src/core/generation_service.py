@@ -126,8 +126,19 @@ class GenerationService:
         for callback in self._on_generation_complete:
             GLib.idle_add(callback, result)
 
-    def load_models(self) -> None:
-        """Load selected models in background thread."""
+    def load_models(
+        self,
+        use_compiled: bool = False,
+        target_width: int = 1024,
+        target_height: int = 1024,
+    ) -> None:
+        """Load selected models in background thread.
+
+        Args:
+            use_compiled: If True, try to load with torch.compile using cached kernels
+            target_width: Target generation width (for compiled cache lookup)
+            target_height: Target generation height (for compiled cache lookup)
+        """
         if self.is_busy:
             return
 
@@ -152,6 +163,9 @@ class GenerationService:
                     vae_path=load_config.get("vae_path"),
                     clip_path=load_config.get("clip_path"),
                     progress_callback=self._notify_progress,
+                    use_compiled=use_compiled,
+                    target_width=target_width,
+                    target_height=target_height,
                 )
 
                 if success:

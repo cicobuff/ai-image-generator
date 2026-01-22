@@ -121,6 +121,7 @@ class WorkScreen(Gtk.Box):
         self._checkpoint_selector = ModelSelector(
             label="Checkpoint:",
             model_type=ModelType.CHECKPOINT,
+            on_changed=self._on_checkpoint_changed,
         )
         box.append(self._checkpoint_selector)
 
@@ -285,6 +286,45 @@ class WorkScreen(Gtk.Box):
         # Also scan for LoRAs
         self._lora_panel.scan_loras()
         self._status_bar.set_text("Ready")
+        # Update precompile button state
+        self._update_precompile_button_state()
+
+    def _on_checkpoint_changed(self, model):
+        """Called when checkpoint selection changes."""
+        self._update_precompile_button_state()
+
+    def _update_precompile_button_state(self):
+        """Update the precompile button label based on compiled cache status."""
+        # Guard against being called before UI is fully built
+        if not hasattr(self, '_precompile_button') or not hasattr(self, '_params_widget'):
+            return
+
+        if not model_manager.loaded.checkpoint:
+            self._precompile_button.set_label("Precompile Model (torch.compile)")
+            self._precompile_button.remove_css_class("suggested-action")
+            return
+
+        # Get current params for resolution
+        params = self._params_widget.get_params("", "")
+        width, height = params.width, params.height
+
+        checkpoint_path = str(model_manager.loaded.checkpoint.path)
+        has_compiled = diffusers_backend.has_compiled_cache(checkpoint_path, width, height)
+
+        if has_compiled:
+            self._precompile_button.set_label(f"Precompiled ({width}x{height})")
+            self._precompile_button.add_css_class("suggested-action")
+            self._precompile_button.set_tooltip_text(
+                f"Model has been precompiled for {width}x{height}. "
+                "Click to recompile if needed."
+            )
+        else:
+            self._precompile_button.set_label("Precompile Model (torch.compile)")
+            self._precompile_button.remove_css_class("suggested-action")
+            self._precompile_button.set_tooltip_text(
+                "Compile the selected model for faster generation. "
+                "This takes a few minutes but speeds up all future generations."
+            )
 
     def _on_load_models(self):
         """Handle Load Models button click."""
@@ -292,7 +332,24 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please select a checkpoint first")
             return
 
-        generation_service.load_models()
+        # Get current params for resolution
+        params = self._params_widget.get_params("", "")
+        width, height = params.width, params.height
+
+        # Check if we have a compiled cache for this model+resolution
+        checkpoint_path = str(model_manager.loaded.checkpoint.path)
+        has_compiled = diffusers_backend.has_compiled_cache(checkpoint_path, width, height)
+
+        if has_compiled:
+            self._status_bar.set_text(f"Loading model with compiled cache for {width}x{height}...")
+        else:
+            self._status_bar.set_text("Loading model...")
+
+        generation_service.load_models(
+            use_compiled=has_compiled,
+            target_width=width,
+            target_height=height,
+        )
 
     def _on_precompile_clicked(self, button):
         """Handle Precompile Model button click."""
@@ -343,6 +400,8 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Model precompiled successfully! Future generations will be faster.")
             # Model is now loaded and compiled, update toolbar state
             self._toolbar.set_model_loaded(True)
+            # Update precompile button to show compiled status
+            self._update_precompile_button_state()
         else:
             self._status_bar.set_text(f"Precompilation failed: {error or 'Unknown error'}")
 

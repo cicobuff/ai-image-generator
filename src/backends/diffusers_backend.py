@@ -96,6 +96,8 @@ class DiffusersBackend:
         self._cached_negative_prompt_embeds: Optional[torch.Tensor] = None
         self._cached_pooled_prompt_embeds: Optional[torch.Tensor] = None  # SDXL only
         self._cached_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None  # SDXL only
+        # Track if model is compiled
+        self._is_compiled: bool = False
 
     @property
     def is_loaded(self) -> bool:
@@ -121,6 +123,62 @@ class DiffusersBackend:
         """Set which GPUs to use for generation."""
         self._gpu_indices = indices if indices else [0]
 
+    @property
+    def is_compiled(self) -> bool:
+        """Check if the loaded model has torch.compile applied."""
+        return self._is_compiled
+
+    def _get_compiled_cache_path(
+        self,
+        checkpoint_path: str,
+        target_width: int,
+        target_height: int,
+    ) -> Path:
+        """
+        Get the cache directory path for a compiled model.
+
+        Args:
+            checkpoint_path: Path to the checkpoint file
+            target_width: Target generation width
+            target_height: Target generation height
+
+        Returns:
+            Path to the cache directory
+        """
+        import hashlib
+
+        cache_base = Path(checkpoint_path).parent.parent / "compiled"
+        cache_key = hashlib.md5(
+            f"{checkpoint_path}_{target_width}x{target_height}".encode()
+        ).hexdigest()[:12]
+
+        return cache_base / cache_key
+
+    def has_compiled_cache(
+        self,
+        checkpoint_path: str,
+        target_width: int = 1024,
+        target_height: int = 1024,
+    ) -> bool:
+        """
+        Check if a compiled cache exists for the given model and resolution.
+
+        Args:
+            checkpoint_path: Path to the checkpoint file
+            target_width: Target generation width
+            target_height: Target generation height
+
+        Returns:
+            True if a compiled cache exists
+        """
+        cache_dir = self._get_compiled_cache_path(checkpoint_path, target_width, target_height)
+        # Check if cache directory exists and has content
+        if cache_dir.exists() and cache_dir.is_dir():
+            # Check for actual cache files (PyTorch stores various files)
+            cache_files = list(cache_dir.glob("*"))
+            return len(cache_files) > 0
+        return False
+
     def load_model(
         self,
         checkpoint_path: str,
@@ -128,6 +186,9 @@ class DiffusersBackend:
         vae_path: Optional[str] = None,
         clip_path: Optional[str] = None,
         progress_callback: Optional[Callable[[str, float], None]] = None,
+        use_compiled: bool = False,
+        target_width: int = 1024,
+        target_height: int = 1024,
     ) -> bool:
         """
         Load a Stable Diffusion model.
@@ -138,13 +199,32 @@ class DiffusersBackend:
             vae_path: Optional path to separate VAE
             clip_path: Optional path to separate CLIP (not commonly used)
             progress_callback: Callback for progress updates (message, progress 0-1)
+            use_compiled: If True and compiled cache exists, apply torch.compile
+            target_width: Target width for compiled cache lookup
+            target_height: Target height for compiled cache lookup
 
         Returns:
             True if loading succeeded
         """
+        import os
+
         try:
             if progress_callback:
                 progress_callback("Preparing to load model...", 0.0)
+
+            # Check if we should use compiled cache
+            should_compile = False
+            cache_dir = None
+            if use_compiled:
+                cache_dir = self._get_compiled_cache_path(checkpoint_path, target_width, target_height)
+                if cache_dir.exists() and any(cache_dir.glob("*")):
+                    should_compile = True
+                    # Set environment variables for PyTorch to find the cache
+                    os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(cache_dir)
+                    os.environ["TORCH_COMPILE_CACHE_DIR"] = str(cache_dir)
+                    _log(f"Using compiled cache from: {cache_dir}")
+                else:
+                    _log(f"No compiled cache found at: {cache_dir}, loading without compilation")
 
             # Unload existing model first
             self.unload_model()
@@ -262,6 +342,21 @@ class DiffusersBackend:
 
             # Enable optimizations
             self._enable_optimizations(progress_callback)
+
+            # Apply torch.compile if using compiled cache
+            if should_compile:
+                if progress_callback:
+                    progress_callback("Applying torch.compile with cached kernels...", 0.9)
+                _log("Applying torch.compile to UNet (using cached kernels)...")
+                self._pipeline.unet = torch.compile(
+                    self._pipeline.unet,
+                    mode="max-autotune",
+                    fullgraph=False,
+                )
+                self._is_compiled = True
+                _log("torch.compile applied - cached kernels will be used")
+            else:
+                self._is_compiled = False
 
             self._loaded_checkpoint = checkpoint_path
             self._loaded_vae = vae_path
@@ -537,6 +632,7 @@ class DiffusersBackend:
         self._loaded_vae = None
         self._is_sdxl = False
         self._loaded_loras = []
+        self._is_compiled = False
 
         # Clear prompt embedding cache
         self._clear_prompt_cache()
