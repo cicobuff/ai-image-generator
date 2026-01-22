@@ -83,9 +83,10 @@ class WorkScreen(Gtk.Box):
         self._paned_inner.set_resize_end_child(False)
         self._paned_inner.set_shrink_end_child(True)  # Allow shrinking
 
-        # Set initial sizes
-        self._paned_outer.set_position(280)
-        self._paned_inner.set_position(800)
+        # Restore panel sizes from config
+        window_config = config_manager.config.window
+        self._paned_outer.set_position(window_config.left_panel_width)
+        self._paned_inner.set_position(window_config.right_panel_position)
 
         # Status bar
         self._status_bar = Gtk.Label(label="Ready")
@@ -219,8 +220,8 @@ class WorkScreen(Gtk.Box):
         self._center_paned.set_resize_end_child(True)
         self._center_paned.set_shrink_end_child(True)
 
-        # Set initial position (leave room for prompts)
-        self._center_paned.set_position(500)
+        # Restore center panel position from config
+        self._center_paned.set_position(config_manager.config.window.center_panel_height)
 
         return self._center_paned
 
@@ -935,3 +936,11 @@ class WorkScreen(Gtk.Box):
             self._update_upscale_button_state()
         else:
             self._status_bar.set_text(f"Upscale failed: {error or 'Unknown error'}")
+
+    def get_panel_positions(self) -> dict:
+        """Get current panel positions for saving to config."""
+        return {
+            "left": self._paned_outer.get_position(),
+            "right": self._paned_inner.get_position(),
+            "center": self._center_paned.get_position(),
+        }

@@ -44,12 +44,25 @@ class GenerationConfig:
 
 
 @dataclass
+class WindowConfig:
+    """Configuration for window and panel sizes."""
+    width: int = 1400
+    height: int = 900
+    maximized: bool = False
+    # Panel positions (Gtk.Paned positions)
+    left_panel_width: int = 280
+    right_panel_position: int = 800
+    center_panel_height: int = 500
+
+
+@dataclass
 class AppConfig:
     """Main application configuration."""
     version: str = "1.0"
     directories: DirectoriesConfig = field(default_factory=DirectoriesConfig)
     gpus: GPUConfig = field(default_factory=GPUConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
+    window: WindowConfig = field(default_factory=WindowConfig)
 
     def to_dict(self) -> dict:
         """Convert config to dictionary for YAML serialization."""
@@ -58,6 +71,7 @@ class AppConfig:
             "directories": asdict(self.directories),
             "gpus": asdict(self.gpus),
             "generation": asdict(self.generation),
+            "window": asdict(self.window),
         }
 
     @classmethod
@@ -68,6 +82,7 @@ class AppConfig:
             directories=DirectoriesConfig(**data.get("directories", {})),
             gpus=GPUConfig(**data.get("gpus", {})),
             generation=GenerationConfig(**data.get("generation", {})),
+            window=WindowConfig(**data.get("window", {})),
         )
 
     def get_models_path(self) -> Path:

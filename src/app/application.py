@@ -42,7 +42,12 @@ class AIImageGeneratorApp(Gtk.Application):
         if not self._window:
             self._window = Gtk.ApplicationWindow(application=self)
             self._window.set_title(APP_NAME)
-            self._window.set_default_size(1400, 900)
+
+            # Restore window size from config
+            window_config = config_manager.config.window
+            self._window.set_default_size(window_config.width, window_config.height)
+            if window_config.maximized:
+                self._window.maximize()
 
             # Handle window close to ensure clean exit with torch.compile
             self._window.connect("close-request", self._on_close_request)
@@ -58,6 +63,12 @@ class AIImageGeneratorApp(Gtk.Application):
     def _on_close_request(self, window):
         """Handle window close request - ensures clean exit with torch.compile."""
         import os
+
+        # Save window size and panel positions
+        try:
+            self._save_window_state()
+        except Exception as e:
+            print(f"Error saving window state: {e}")
 
         # Quick cleanup
         try:
@@ -87,6 +98,27 @@ class AIImageGeneratorApp(Gtk.Application):
         # Force immediate exit to avoid torch.compile hang
         os._exit(0)
         return True  # Won't be reached, but indicates we handled the event
+
+    def _save_window_state(self):
+        """Save window size and panel positions to config."""
+        window_config = config_manager.config.window
+
+        # Check if maximized
+        window_config.maximized = self._window.is_maximized()
+
+        # Only save size if not maximized
+        if not window_config.maximized:
+            window_config.width = self._window.get_width()
+            window_config.height = self._window.get_height()
+
+        # Get panel positions from work screen if available
+        if self._work_screen is not None:
+            panel_positions = self._work_screen.get_panel_positions()
+            window_config.left_panel_width = panel_positions.get("left", 280)
+            window_config.right_panel_position = panel_positions.get("right", 800)
+            window_config.center_panel_height = panel_positions.get("center", 500)
+
+        config_manager.save()
 
     def do_shutdown(self):
         """Called when the application shuts down."""
