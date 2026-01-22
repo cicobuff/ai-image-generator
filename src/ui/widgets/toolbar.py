@@ -1,12 +1,20 @@
 """Main toolbar widget with action buttons."""
 
 from typing import Optional, Callable
+from enum import Enum
 
 import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk
 
 from src.core.generation_service import GenerationState
+
+
+class InpaintTool(Enum):
+    """Inpaint mask drawing tools."""
+    NONE = "none"
+    RECT = "rect"
+    PAINT = "paint"
 
 
 class Toolbar(Gtk.Box):
@@ -19,6 +27,10 @@ class Toolbar(Gtk.Box):
         on_generate: Optional[Callable[[], None]] = None,
         on_img2img: Optional[Callable[[], None]] = None,
         on_cancel: Optional[Callable[[], None]] = None,
+        on_inpaint_mode_changed: Optional[Callable[[bool], None]] = None,
+        on_inpaint_tool_changed: Optional[Callable[[InpaintTool], None]] = None,
+        on_clear_masks: Optional[Callable[[], None]] = None,
+        on_generate_inpaint: Optional[Callable[[], None]] = None,
     ):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self._on_load = on_load
@@ -26,6 +38,13 @@ class Toolbar(Gtk.Box):
         self._on_generate = on_generate
         self._on_img2img = on_img2img
         self._on_cancel = on_cancel
+        self._on_inpaint_mode_changed = on_inpaint_mode_changed
+        self._on_inpaint_tool_changed = on_inpaint_tool_changed
+        self._on_clear_masks = on_clear_masks
+        self._on_generate_inpaint = on_generate_inpaint
+
+        self._inpaint_mode = False
+        self._current_tool = InpaintTool.NONE
 
         self.add_css_class("toolbar")
         self._build_ui()
@@ -59,6 +78,49 @@ class Toolbar(Gtk.Box):
         self._img2img_button.set_tooltip_text("Generate a new image based on the current image")
         self._img2img_button.connect("clicked", self._on_img2img_clicked)
         self.append(self._img2img_button)
+
+        # Separator before inpaint
+        self._inpaint_separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        self._inpaint_separator.set_margin_start(8)
+        self._inpaint_separator.set_margin_end(8)
+        self._inpaint_separator.set_visible(False)
+        self.append(self._inpaint_separator)
+
+        # Inpaint Mode toggle
+        self._inpaint_toggle = Gtk.ToggleButton(label="Inpaint Mode")
+        self._inpaint_toggle.set_tooltip_text("Enable inpainting mode to draw masks")
+        self._inpaint_toggle.connect("toggled", self._on_inpaint_toggled)
+        self._inpaint_toggle.set_visible(False)
+        self.append(self._inpaint_toggle)
+
+        # Rect Mask tool button (visible in inpaint mode)
+        self._rect_mask_button = Gtk.ToggleButton(label="Rect Mask")
+        self._rect_mask_button.set_tooltip_text("Draw rectangular masks")
+        self._rect_mask_button.connect("toggled", self._on_rect_mask_toggled)
+        self._rect_mask_button.set_visible(False)
+        self.append(self._rect_mask_button)
+
+        # Paint Mask tool button (visible in inpaint mode)
+        self._paint_mask_button = Gtk.ToggleButton(label="Paint Mask")
+        self._paint_mask_button.set_tooltip_text("Paint masks with brush (25px radius)")
+        self._paint_mask_button.connect("toggled", self._on_paint_mask_toggled)
+        self._paint_mask_button.set_visible(False)
+        self.append(self._paint_mask_button)
+
+        # Clear Masks button (visible in inpaint mode)
+        self._clear_masks_button = Gtk.Button(label="Clear Masks")
+        self._clear_masks_button.set_tooltip_text("Clear all drawn masks")
+        self._clear_masks_button.connect("clicked", self._on_clear_masks_clicked)
+        self._clear_masks_button.set_visible(False)
+        self.append(self._clear_masks_button)
+
+        # Generate Inpaint button (visible in inpaint mode)
+        self._generate_inpaint_button = Gtk.Button(label="Generate Inpaint")
+        self._generate_inpaint_button.add_css_class("suggested-action")
+        self._generate_inpaint_button.set_tooltip_text("Generate inpainted image in masked areas")
+        self._generate_inpaint_button.connect("clicked", self._on_generate_inpaint_clicked)
+        self._generate_inpaint_button.set_visible(False)
+        self.append(self._generate_inpaint_button)
 
         # Cancel button (hidden by default)
         self._cancel_button = Gtk.Button(label="Cancel")
@@ -108,17 +170,88 @@ class Toolbar(Gtk.Box):
         if self._on_cancel:
             self._on_cancel()
 
+    def _on_inpaint_toggled(self, button):
+        """Handle Inpaint Mode toggle."""
+        self._inpaint_mode = button.get_active()
+        self._update_inpaint_ui()
+        if self._on_inpaint_mode_changed:
+            self._on_inpaint_mode_changed(self._inpaint_mode)
+        # Reset tool when exiting inpaint mode
+        if not self._inpaint_mode:
+            self._current_tool = InpaintTool.NONE
+            self._rect_mask_button.set_active(False)
+            self._paint_mask_button.set_active(False)
+            if self._on_inpaint_tool_changed:
+                self._on_inpaint_tool_changed(InpaintTool.NONE)
+
+    def _on_rect_mask_toggled(self, button):
+        """Handle Rect Mask tool toggle."""
+        if button.get_active():
+            self._current_tool = InpaintTool.RECT
+            # Untoggle paint mask
+            self._paint_mask_button.handler_block_by_func(self._on_paint_mask_toggled)
+            self._paint_mask_button.set_active(False)
+            self._paint_mask_button.handler_unblock_by_func(self._on_paint_mask_toggled)
+        else:
+            self._current_tool = InpaintTool.NONE
+        if self._on_inpaint_tool_changed:
+            self._on_inpaint_tool_changed(self._current_tool)
+
+    def _on_paint_mask_toggled(self, button):
+        """Handle Paint Mask tool toggle."""
+        if button.get_active():
+            self._current_tool = InpaintTool.PAINT
+            # Untoggle rect mask
+            self._rect_mask_button.handler_block_by_func(self._on_rect_mask_toggled)
+            self._rect_mask_button.set_active(False)
+            self._rect_mask_button.handler_unblock_by_func(self._on_rect_mask_toggled)
+        else:
+            self._current_tool = InpaintTool.NONE
+        if self._on_inpaint_tool_changed:
+            self._on_inpaint_tool_changed(self._current_tool)
+
+    def _on_clear_masks_clicked(self, button):
+        """Handle Clear Masks button click."""
+        if self._on_clear_masks:
+            self._on_clear_masks()
+
+    def _on_generate_inpaint_clicked(self, button):
+        """Handle Generate Inpaint button click."""
+        if self._on_generate_inpaint:
+            self._on_generate_inpaint()
+
+    def _update_inpaint_ui(self):
+        """Update visibility of inpaint-related buttons."""
+        visible = self._inpaint_mode
+        self._rect_mask_button.set_visible(visible)
+        self._paint_mask_button.set_visible(visible)
+        self._clear_masks_button.set_visible(visible)
+        self._generate_inpaint_button.set_visible(visible)
+        # Hide normal generation buttons in inpaint mode
+        self._generate_button.set_visible(not visible)
+        self._img2img_button.set_visible(not visible)
+
     def set_state(self, state: GenerationState):
         """Update toolbar state based on generation state."""
         if state == GenerationState.IDLE:
             self._load_button.set_sensitive(True)
             self._clear_button.set_sensitive(True)
             self._generate_button.set_sensitive(True)
-            self._generate_button.set_visible(True)
             self._img2img_button.set_sensitive(True)
-            self._img2img_button.set_visible(True)
+            self._inpaint_toggle.set_sensitive(True)
             self._cancel_button.set_visible(False)
             self._progress_bar.set_visible(False)
+            # Restore visibility based on inpaint mode
+            if self._inpaint_mode:
+                self._generate_button.set_visible(False)
+                self._img2img_button.set_visible(False)
+                self._rect_mask_button.set_visible(True)
+                self._paint_mask_button.set_visible(True)
+                self._clear_masks_button.set_visible(True)
+                self._generate_inpaint_button.set_visible(True)
+            else:
+                self._generate_button.set_visible(True)
+                self._img2img_button.set_visible(True)
 
         elif state == GenerationState.LOADING:
             self._load_button.set_sensitive(False)
@@ -135,6 +268,11 @@ class Toolbar(Gtk.Box):
             self._clear_button.set_sensitive(False)
             self._generate_button.set_visible(False)
             self._img2img_button.set_visible(False)
+            self._inpaint_toggle.set_sensitive(False)
+            self._rect_mask_button.set_visible(False)
+            self._paint_mask_button.set_visible(False)
+            self._clear_masks_button.set_visible(False)
+            self._generate_inpaint_button.set_visible(False)
             self._cancel_button.set_visible(True)
             self._progress_bar.set_visible(True)
 
@@ -143,6 +281,7 @@ class Toolbar(Gtk.Box):
             self._clear_button.set_sensitive(False)
             self._generate_button.set_visible(False)
             self._img2img_button.set_visible(False)
+            self._inpaint_toggle.set_sensitive(False)
             self._cancel_button.set_sensitive(False)
             self._progress_bar.set_visible(True)
 
@@ -160,6 +299,27 @@ class Toolbar(Gtk.Box):
             "Generate a new image based on the current image" if has_image
             else "Load an image first to use Image to Image"
         )
+        # Show/hide inpaint toggle based on image presence
+        self._inpaint_separator.set_visible(has_image)
+        self._inpaint_toggle.set_visible(has_image)
+        # If no image and inpaint mode was on, turn it off
+        if not has_image and self._inpaint_mode:
+            self._inpaint_toggle.set_active(False)
+
+    @property
+    def inpaint_mode(self) -> bool:
+        """Check if inpaint mode is active."""
+        return self._inpaint_mode
+
+    @property
+    def current_tool(self) -> InpaintTool:
+        """Get the current inpaint tool."""
+        return self._current_tool
+
+    def exit_inpaint_mode(self):
+        """Exit inpaint mode programmatically."""
+        if self._inpaint_mode:
+            self._inpaint_toggle.set_active(False)
 
     def set_progress(self, message: str, fraction: float):
         """Update progress display."""

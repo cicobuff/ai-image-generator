@@ -10,8 +10,10 @@ from PIL import Image
 from diffusers import (
     StableDiffusionXLPipeline,
     StableDiffusionXLImg2ImgPipeline,
+    StableDiffusionXLInpaintPipeline,
     StableDiffusionPipeline,
     StableDiffusionImg2ImgPipeline,
+    StableDiffusionInpaintPipeline,
     AutoencoderKL,
     EulerDiscreteScheduler,
     EulerAncestralDiscreteScheduler,
@@ -66,6 +68,7 @@ class DiffusersBackend:
     def __init__(self):
         self._pipeline: Optional[Any] = None
         self._img2img_pipeline: Optional[Any] = None
+        self._inpaint_pipeline: Optional[Any] = None
         self._is_sdxl: bool = False
         self._loaded_checkpoint: Optional[str] = None
         self._loaded_vae: Optional[str] = None
@@ -195,6 +198,34 @@ class DiffusersBackend:
             print("Img2img pipeline created")
 
             if progress_callback:
+                progress_callback("Creating inpaint pipeline...", 0.75)
+
+            # Create inpaint pipeline from the same components
+            inpaint_class = StableDiffusionXLInpaintPipeline if self._is_sdxl else StableDiffusionInpaintPipeline
+            if self._is_sdxl:
+                self._inpaint_pipeline = inpaint_class(
+                    vae=self._pipeline.vae,
+                    text_encoder=self._pipeline.text_encoder,
+                    text_encoder_2=self._pipeline.text_encoder_2,
+                    tokenizer=self._pipeline.tokenizer,
+                    tokenizer_2=self._pipeline.tokenizer_2,
+                    unet=self._pipeline.unet,
+                    scheduler=self._pipeline.scheduler,
+                )
+            else:
+                self._inpaint_pipeline = inpaint_class(
+                    vae=self._pipeline.vae,
+                    text_encoder=self._pipeline.text_encoder,
+                    tokenizer=self._pipeline.tokenizer,
+                    unet=self._pipeline.unet,
+                    scheduler=self._pipeline.scheduler,
+                    safety_checker=None,
+                    feature_extractor=None,
+                    requires_safety_checker=False,
+                )
+            print("Inpaint pipeline created")
+
+            if progress_callback:
                 progress_callback("Optimizing model...", 0.8)
 
             # Enable optimizations
@@ -264,6 +295,10 @@ class DiffusersBackend:
         if self._img2img_pipeline is not None:
             del self._img2img_pipeline
             self._img2img_pipeline = None
+
+        if self._inpaint_pipeline is not None:
+            del self._inpaint_pipeline
+            self._inpaint_pipeline = None
 
         self._loaded_checkpoint = None
         self._loaded_vae = None
@@ -430,6 +465,98 @@ class DiffusersBackend:
         except Exception as e:
             import traceback
             print(f"Error during img2img generation: {e}")
+            traceback.print_exc()
+            return None
+
+    def generate_inpaint(
+        self,
+        params: GenerationParams,
+        input_image: Image.Image,
+        mask_image: Image.Image,
+        strength: float = 0.75,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Optional[Image.Image]:
+        """
+        Generate an inpainted image using the loaded model.
+
+        Args:
+            params: Generation parameters
+            input_image: Input image to inpaint
+            mask_image: Mask image (white = inpaint, black = keep)
+            strength: How much to transform masked areas (0=no change, 1=full generation)
+            progress_callback: Callback for step progress (current_step, total_steps)
+
+        Returns:
+            Generated PIL Image or None if generation failed
+        """
+        if not self.is_loaded or self._inpaint_pipeline is None:
+            print("No model loaded for inpainting")
+            return None
+
+        try:
+            # Set up scheduler
+            self._inpaint_pipeline.scheduler = self._get_scheduler(params.sampler)
+
+            # Handle seed
+            if params.seed == -1:
+                generator = None
+            else:
+                gen_device = self._device
+                print(f"Creating generator on device: {gen_device}")
+                generator = torch.Generator(device=gen_device).manual_seed(params.seed)
+
+            # Calculate effective steps
+            effective_steps = max(1, int(params.steps * strength))
+
+            # Create progress callback wrapper
+            def callback_on_step_end(pipeline, step, timestep, callback_kwargs):
+                if progress_callback:
+                    progress_callback(step + 1, effective_steps)
+                return callback_kwargs
+
+            # For inpainting, use the original image dimensions (not params dimensions)
+            target_width = input_image.width
+            target_height = input_image.height
+
+            print(f"Starting inpaint: {target_width}x{target_height}, strength={strength}, {params.steps} steps")
+
+            # Ensure images are RGB
+            if input_image.mode != "RGB":
+                input_image = input_image.convert("RGB")
+
+            # Ensure mask is the right format (L mode for grayscale)
+            if mask_image.mode != "L":
+                mask_image = mask_image.convert("L")
+
+            # Ensure mask matches input image size
+            if mask_image.size != input_image.size:
+                mask_image = mask_image.resize(input_image.size, Image.Resampling.LANCZOS)
+                print(f"Resized mask to match input image: {input_image.width}x{input_image.height}")
+
+            # Generate image - explicitly pass dimensions to ensure output matches input
+            result = self._inpaint_pipeline(
+                prompt=params.prompt,
+                negative_prompt=params.negative_prompt if params.negative_prompt else None,
+                image=input_image,
+                mask_image=mask_image,
+                width=target_width,
+                height=target_height,
+                strength=strength,
+                num_inference_steps=params.steps,
+                guidance_scale=params.cfg_scale,
+                generator=generator,
+                callback_on_step_end=callback_on_step_end,
+            )
+
+            print("Inpaint generation complete")
+
+            if result.images:
+                return result.images[0]
+            return None
+
+        except Exception as e:
+            import traceback
+            print(f"Error during inpaint generation: {e}")
             traceback.print_exc()
             return None
 

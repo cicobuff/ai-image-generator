@@ -18,6 +18,8 @@ from src.ui.widgets.image_display import ImageDisplayFrame
 from src.ui.widgets.thumbnail_gallery import ThumbnailGallery
 from src.ui.widgets.toolbar import Toolbar
 from src.ui.widgets.upscale_settings import UpscaleSettingsWidget
+from src.ui.widgets.toolbar import InpaintTool
+from src.ui.widgets.image_display import MaskTool
 from src.utils.metadata import load_metadata_from_image
 
 
@@ -40,6 +42,10 @@ class WorkScreen(Gtk.Box):
             on_generate=self._on_generate,
             on_img2img=self._on_img2img,
             on_cancel=self._on_cancel,
+            on_inpaint_mode_changed=self._on_inpaint_mode_changed,
+            on_inpaint_tool_changed=self._on_inpaint_tool_changed,
+            on_clear_masks=self._on_clear_masks,
+            on_generate_inpaint=self._on_generate_inpaint,
         )
         self.append(self._toolbar)
 
@@ -331,6 +337,90 @@ class WorkScreen(Gtk.Box):
         """Handle Cancel button click."""
         generation_service.cancel()
 
+    def _on_inpaint_mode_changed(self, enabled: bool):
+        """Handle Inpaint Mode toggle."""
+        self._image_display.set_inpaint_mode(enabled)
+        if enabled:
+            self._status_bar.set_text("Inpaint mode enabled - select a mask tool to draw")
+        else:
+            self._status_bar.set_text("Inpaint mode disabled")
+
+    def _on_inpaint_tool_changed(self, tool: InpaintTool):
+        """Handle inpaint tool change."""
+        # Map toolbar InpaintTool to image display MaskTool
+        tool_map = {
+            InpaintTool.NONE: MaskTool.NONE,
+            InpaintTool.RECT: MaskTool.RECT,
+            InpaintTool.PAINT: MaskTool.PAINT,
+        }
+        mask_tool = tool_map.get(tool, MaskTool.NONE)
+        self._image_display.set_mask_tool(mask_tool)
+
+        if tool == InpaintTool.RECT:
+            self._status_bar.set_text("Rect Mask: Click and drag to draw rectangular mask")
+        elif tool == InpaintTool.PAINT:
+            self._status_bar.set_text("Paint Mask: Click and drag to paint mask (25px brush)")
+        else:
+            self._status_bar.set_text("Select a mask tool to draw")
+
+    def _on_clear_masks(self):
+        """Handle Clear Masks button click."""
+        self._image_display.clear_masks()
+        self._status_bar.set_text("Masks cleared")
+
+    def _on_generate_inpaint(self):
+        """Handle Generate Inpaint button click."""
+        if not generation_service.is_model_loaded:
+            self._status_bar.set_text("Please load models first")
+            return
+
+        # Check if there's a mask
+        if not self._image_display.has_mask():
+            self._status_bar.set_text("Please draw a mask first")
+            return
+
+        # Get the original image (stored when entering inpaint mode)
+        original_image = self._image_display.get_original_image()
+        if original_image is None:
+            original_image = self._image_display.get_pil_image()
+
+        if original_image is None:
+            self._status_bar.set_text("No image to inpaint")
+            return
+
+        # Get the mask
+        mask_image = self._image_display.get_mask_image()
+        if mask_image is None:
+            self._status_bar.set_text("Failed to get mask")
+            return
+
+        positive = self._prompt_panel.get_positive_prompt()
+        if not positive.strip():
+            self._status_bar.set_text("Please enter a positive prompt")
+            return
+
+        negative = self._prompt_panel.get_negative_prompt()
+        params = self._params_widget.get_params(positive, negative)
+        strength = self._params_widget.get_strength()
+
+        # Store whether user wanted random seed
+        self._last_seed_was_random = (params.seed == -1)
+
+        # Get upscale settings
+        upscale_enabled = self._upscale_widget.is_enabled
+        upscale_model_path = self._upscale_widget.selected_model_path
+        upscale_model_name = self._upscale_widget.selected_model_name
+
+        generation_service.generate_inpaint(
+            params,
+            input_image=original_image,
+            mask_image=mask_image,
+            strength=strength,
+            upscale_enabled=upscale_enabled,
+            upscale_model_path=upscale_model_path,
+            upscale_model_name=upscale_model_name,
+        )
+
     def _on_state_changed(self, state: GenerationState):
         """Handle generation state change."""
         self._toolbar.set_state(state)
@@ -352,6 +442,10 @@ class WorkScreen(Gtk.Box):
         self._toolbar.clear_progress()
 
         if result.success and result.image:
+            # In inpaint mode, we want to keep the mask and show the result
+            # The user can continue to refine with the same mask
+            in_inpaint_mode = self._image_display.inpaint_mode
+
             # Display the generated image
             self._image_display.set_image(result.image)
 
@@ -366,13 +460,24 @@ class WorkScreen(Gtk.Box):
 
             # Show the actual seed used in status bar
             seed_info = f" (seed: {result.seed})" if result.seed != -1 else ""
-            self._status_bar.set_text(f"Generated: {result.path.name if result.path else 'image'}{seed_info}")
+            mode_info = " (inpaint)" if in_inpaint_mode else ""
+            self._status_bar.set_text(f"Generated: {result.path.name if result.path else 'image'}{seed_info}{mode_info}")
+
+            # Update toolbar has_image state
+            self._toolbar.set_has_image(True)
         else:
             self._status_bar.set_text(f"Generation failed: {result.error or 'Unknown error'}")
 
     def _on_thumbnail_selected(self, path: Path):
         """Handle thumbnail selection."""
+        # Exit inpaint mode when selecting a different image
+        if self._toolbar.inpaint_mode:
+            self._toolbar.exit_inpaint_mode()
+
         self._image_display.set_image_from_path(path)
+
+        # Update toolbar has_image state
+        self._toolbar.set_has_image(True)
 
         # Try to load metadata and restore parameters
         metadata = load_metadata_from_image(path)
