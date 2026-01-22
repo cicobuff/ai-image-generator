@@ -138,16 +138,6 @@ class WorkScreen(Gtk.Box):
         )
         box.append(self._clip_selector)
 
-        # Torch compile checkbox
-        self._compile_checkbox = Gtk.CheckButton(label="Enable torch.compile (faster, slower first run)")
-        self._compile_checkbox.set_tooltip_text(
-            "Compiles the model for faster inference. First generation will be slower due to compilation. "
-            "Disable if you experience issues."
-        )
-        self._compile_checkbox.set_active(False)  # Disabled by default
-        self._compile_checkbox.set_margin_top(8)
-        box.append(self._compile_checkbox)
-
         # Separator
         separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
         separator.set_margin_top(8)
@@ -293,9 +283,7 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please select a checkpoint first")
             return
 
-        # Get torch.compile setting
-        enable_compile = self._compile_checkbox.get_active()
-        generation_service.load_models(enable_compile=enable_compile)
+        generation_service.load_models()
 
     def _on_clear_models(self):
         """Handle Clear Models button click."""

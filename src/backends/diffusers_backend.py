@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Callable, Any
 import gc
-import os
 import warnings
 
 import torch
@@ -13,9 +12,6 @@ import torch
 warnings.filterwarnings("ignore", message=".*Pipelines loaded with.*dtype=torch.float16.*cannot run with.*cpu.*")
 warnings.filterwarnings("ignore", message=".*upcast_vae.*is deprecated.*")
 
-# Environment variable to disable torch.compile (set to "1" to disable)
-# Useful if experiencing shutdown issues or compatibility problems
-DISABLE_TORCH_COMPILE = os.environ.get("AIIG_DISABLE_COMPILE", "0") == "1"
 from PIL import Image
 from diffusers import (
     StableDiffusionXLPipeline,
@@ -86,10 +82,6 @@ class DiffusersBackend:
         self._device: str = "cuda:0" if torch.cuda.is_available() else "cpu"
         # LoRA tracking
         self._loaded_loras: list[tuple[str, float]] = []  # List of (path, weight) tuples
-        # Track if torch.compile warm-up has been done
-        self._compiled_warmed_up: bool = False
-        self._torch_compile_enabled: bool = False
-        self._enable_compile: bool = False  # User setting from UI (disabled by default)
 
     @property
     def is_loaded(self) -> bool:
@@ -122,7 +114,6 @@ class DiffusersBackend:
         vae_path: Optional[str] = None,
         clip_path: Optional[str] = None,
         progress_callback: Optional[Callable[[str, float], None]] = None,
-        enable_compile: bool = False,
     ) -> bool:
         """
         Load a Stable Diffusion model.
@@ -133,12 +124,10 @@ class DiffusersBackend:
             vae_path: Optional path to separate VAE
             clip_path: Optional path to separate CLIP (not commonly used)
             progress_callback: Callback for progress updates (message, progress 0-1)
-            enable_compile: Whether to enable torch.compile optimization
 
         Returns:
             True if loading succeeded
         """
-        self._enable_compile = enable_compile
         try:
             if progress_callback:
                 progress_callback("Preparing to load model...", 0.0)
@@ -258,7 +247,7 @@ class DiffusersBackend:
                 progress_callback("Optimizing model...", 0.8)
 
             # Enable optimizations
-            self._enable_optimizations()
+            self._enable_optimizations(progress_callback)
 
             self._loaded_checkpoint = checkpoint_path
             self._loaded_vae = vae_path
@@ -286,7 +275,10 @@ class DiffusersBackend:
                 progress_callback(f"Error: {e}", 0.0)
             return False
 
-    def _enable_optimizations(self) -> None:
+    def _enable_optimizations(
+        self,
+        progress_callback: Optional[Callable[[str, float], None]] = None,
+    ) -> None:
         """Enable performance optimizations for the pipeline."""
         if self._pipeline is None:
             return
@@ -349,102 +341,6 @@ class DiffusersBackend:
         except Exception:
             pass
 
-        # Try torch.compile for additional speedup (PyTorch 2.0+)
-        # Note: First run will be slower due to compilation
-        # Can be disabled with AIIG_DISABLE_COMPILE=1 environment variable or UI checkbox
-        self._torch_compile_enabled = False
-        self._compiled_warmed_up = False
-
-        if DISABLE_TORCH_COMPILE:
-            print("torch.compile disabled via AIIG_DISABLE_COMPILE environment variable")
-        elif not self._enable_compile:
-            print("torch.compile disabled via UI setting")
-        else:
-            try:
-                if hasattr(torch, 'compile'):
-                    # Compile UNet
-                    self._pipeline.unet = torch.compile(
-                        self._pipeline.unet,
-                        mode="reduce-overhead",
-                        fullgraph=False,  # More compatible
-                    )
-                    # Also compile VAE decoder for faster latent-to-image conversion
-                    self._pipeline.vae.decode = torch.compile(
-                        self._pipeline.vae.decode,
-                        mode="reduce-overhead",
-                        fullgraph=False,
-                    )
-                    self._torch_compile_enabled = True
-                    print("Enabled torch.compile for UNet and VAE (warm-up required)")
-            except Exception as e:
-                print(f"Could not enable torch.compile: {e}")
-
-    def warm_up(
-        self,
-        progress_callback: Optional[Callable[[str, float], None]] = None,
-    ) -> None:
-        """
-        Perform a warm-up generation to trigger torch.compile compilation.
-        This should be called after loading models for faster first real generation.
-        """
-        if not self.is_loaded:
-            return
-
-        if self._compiled_warmed_up or not self._torch_compile_enabled:
-            # Already warmed up or torch.compile not enabled
-            if progress_callback:
-                progress_callback("Ready", 1.0)
-            return
-
-        try:
-            if progress_callback:
-                progress_callback("Compiling model (one-time)...", 0.1)
-
-            print("Starting torch.compile warm-up...")
-
-            # Do a small dummy generation to trigger compilation
-            # Use small size to minimize warm-up time
-            warm_up_size = 512 if self._is_sdxl else 256
-
-            with torch.no_grad():
-                if progress_callback:
-                    progress_callback("Compiling UNet (one-time)...", 0.3)
-
-                # Run a single step generation to trigger UNet compilation
-                latents = self._pipeline(
-                    prompt="warm up",
-                    negative_prompt="",
-                    width=warm_up_size,
-                    height=warm_up_size,
-                    num_inference_steps=1,
-                    guidance_scale=1.0,
-                    output_type="latent",  # Get latents first
-                ).images
-
-                if progress_callback:
-                    progress_callback("Compiling VAE decoder (one-time)...", 0.7)
-
-                # Trigger VAE compilation by decoding the latents
-                _ = self._pipeline.vae.decode(latents / self._pipeline.vae.config.scaling_factor, return_dict=False)[0]
-
-            self._compiled_warmed_up = True
-
-            if progress_callback:
-                progress_callback("Model compiled and ready", 1.0)
-
-            print("torch.compile warm-up complete")
-
-        except Exception as e:
-            print(f"Warm-up failed (non-critical): {e}")
-            self._compiled_warmed_up = True  # Don't retry
-            if progress_callback:
-                progress_callback("Ready", 1.0)
-
-    @property
-    def needs_warmup(self) -> bool:
-        """Check if warm-up is needed."""
-        return self._torch_compile_enabled and not self._compiled_warmed_up
-
     def unload_model(self) -> None:
         """Unload the current model and free VRAM."""
         if self._pipeline is not None:
@@ -463,21 +359,12 @@ class DiffusersBackend:
         self._loaded_vae = None
         self._is_sdxl = False
         self._loaded_loras = []
-        self._torch_compile_enabled = False
-        self._compiled_warmed_up = False
-        self._enable_compile = False
 
         # Force garbage collection and CUDA cache clear
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-
-        # Reset torch compile cache to help with cleanup
-        try:
-            torch._dynamo.reset()
-        except Exception:
-            pass
 
     def load_loras(
         self,
@@ -661,7 +548,7 @@ class DiffusersBackend:
 
             print(f"Starting generation: {params.width}x{params.height}, {params.steps} steps")
 
-            # Generate image (first run may be slower due to CUDA kernel initialization)
+            # Generate image
             result = self._pipeline(
                 prompt=params.prompt,
                 negative_prompt=params.negative_prompt if params.negative_prompt else None,

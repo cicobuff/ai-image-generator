@@ -126,12 +126,8 @@ class GenerationService:
         for callback in self._on_generation_complete:
             GLib.idle_add(callback, result)
 
-    def load_models(self, enable_compile: bool = False) -> None:
-        """Load selected models in background thread.
-
-        Args:
-            enable_compile: Whether to enable torch.compile optimization (disabled by default)
-        """
+    def load_models(self) -> None:
+        """Load selected models in background thread."""
         if self.is_busy:
             return
 
@@ -156,7 +152,6 @@ class GenerationService:
                     vae_path=load_config.get("vae_path"),
                     clip_path=load_config.get("clip_path"),
                     progress_callback=self._notify_progress,
-                    enable_compile=enable_compile,
                 )
 
                 if success:
@@ -171,11 +166,6 @@ class GenerationService:
                         self._loaded_clip_name = Path(load_config["clip_path"]).stem
                     else:
                         self._loaded_clip_name = ""
-
-                    # Perform warm-up if torch.compile is enabled
-                    if diffusers_backend.needs_warmup:
-                        self._notify_progress("Compiling model (one-time)...", 0.9)
-                        diffusers_backend.warm_up(self._notify_progress)
 
                     self._notify_progress("Model loaded and ready", 1.0)
                 else:
