@@ -78,15 +78,22 @@ class DiffusersBackend:
         "PNDMScheduler": PNDMScheduler,
     }
 
-    def __init__(self):
+    def __init__(self, gpu_index: int = 0):
+        """
+        Initialize the backend.
+
+        Args:
+            gpu_index: The GPU index to use for this backend instance
+        """
         self._pipeline: Optional[Any] = None
         self._img2img_pipeline: Optional[Any] = None
         self._inpaint_pipeline: Optional[Any] = None
         self._is_sdxl: bool = False
         self._loaded_checkpoint: Optional[str] = None
         self._loaded_vae: Optional[str] = None
-        self._gpu_indices: list[int] = [0]
-        self._device: str = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self._gpu_index: int = gpu_index
+        self._gpu_indices: list[int] = [gpu_index]
+        self._device: str = f"cuda:{gpu_index}" if torch.cuda.is_available() else "cpu"
         # LoRA tracking
         self._loaded_loras: list[tuple[str, float]] = []  # List of (path, weight) tuples
         # Prompt embedding cache for faster repeated generations
@@ -122,6 +129,15 @@ class DiffusersBackend:
     def set_gpus(self, indices: list[int]) -> None:
         """Set which GPUs to use for generation."""
         self._gpu_indices = indices if indices else [0]
+        # Update primary GPU index and device
+        if indices:
+            self._gpu_index = indices[0]
+            self._device = f"cuda:{self._gpu_index}" if torch.cuda.is_available() else "cpu"
+
+    @property
+    def gpu_index(self) -> int:
+        """Get the GPU index this backend uses."""
+        return self._gpu_index
 
     @property
     def is_compiled(self) -> bool:

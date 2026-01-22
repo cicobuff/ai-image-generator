@@ -2,6 +2,8 @@
 
 from pathlib import Path
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -11,7 +13,7 @@ from src.core.config import config_manager
 from src.core.model_manager import model_manager, ModelType
 from src.core.generation_service import generation_service, GenerationState, GenerationResult
 from src.backends.upscale_backend import upscale_backend
-from src.backends.diffusers_backend import diffusers_backend
+from src.backends.diffusers_backend import diffusers_backend, DiffusersBackend, GenerationParams
 from src.ui.widgets.model_selector import ModelSelector
 from src.ui.widgets.vram_display import VRAMDisplay
 from src.ui.widgets.generation_params import GenerationParamsWidget
@@ -20,6 +22,7 @@ from src.ui.widgets.image_display import ImageDisplayFrame
 from src.ui.widgets.thumbnail_gallery import ThumbnailGallery
 from src.ui.widgets.toolbar import Toolbar
 from src.ui.widgets.upscale_settings import UpscaleSettingsWidget
+from src.ui.widgets.batch_settings import BatchSettingsWidget
 from src.ui.widgets.toolbar import InpaintTool
 from src.ui.widgets.image_display import MaskTool
 from src.ui.widgets.lora_selector import LoRASelectorPanel
@@ -35,6 +38,17 @@ class WorkScreen(Gtk.Box):
         # Track pending generation to run after model loading
         # Values: None, "generate", "img2img", "inpaint"
         self._pending_generation = None
+        # Batch generation state
+        self._batch_mode = False
+        self._batch_type = None  # "generate" or "img2img"
+        self._batch_count = 0
+        self._batch_current = 0
+        self._batch_params = None
+        self._batch_input_image = None  # For img2img batch
+        # Multi-GPU batch generation
+        self._gpu_backends: dict[int, DiffusersBackend] = {}  # GPU index -> backend instance
+        self._batch_executor: ThreadPoolExecutor = None
+        self._batch_cancelled = False
         self._build_ui()
         self._connect_signals()
         self._initial_setup()
@@ -203,6 +217,18 @@ class WorkScreen(Gtk.Box):
             on_changed=self._on_upscale_settings_changed
         )
         box.append(self._upscale_widget)
+
+        # Separator
+        separator5 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        separator5.set_margin_top(6)
+        separator5.set_margin_bottom(6)
+        box.append(separator5)
+
+        # Batch settings
+        self._batch_widget = BatchSettingsWidget(
+            on_changed=self._on_batch_settings_changed
+        )
+        box.append(self._batch_widget)
 
         return scrolled
 
@@ -518,14 +544,20 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please enter a positive prompt")
             return
 
-        # Ensure model is loaded and optimized if needed
+        # For batch mode, skip normal model loading - batch handles its own
+        batch_count = self._batch_widget.batch_count
+        if batch_count > 1:
+            self._start_batch_generation("generate")
+            return
+
+        # Ensure model is loaded and optimized if needed (single image only)
         if not self._ensure_model_ready("generate"):
             return
 
         self._do_generate()
 
     def _do_generate(self):
-        """Perform the actual generation (called after models are loaded)."""
+        """Perform the actual generation (called after models are loaded, single image only)."""
         positive = self._prompt_panel.get_positive_prompt()
         negative = self._prompt_panel.get_negative_prompt()
         params = self._params_widget.get_params(positive, negative)
@@ -553,6 +585,382 @@ class WorkScreen(Gtk.Box):
             loras=loras if loras else None,
         )
 
+    def _start_batch_generation(self, batch_type: str):
+        """Start a parallel batch generation sequence using multiple GPUs."""
+        self._batch_mode = True
+        self._batch_type = batch_type
+        self._batch_count = self._batch_widget.batch_count
+        self._batch_current = 0
+        self._batch_cancelled = False
+
+        # Store input image for img2img batch (use the same image for all)
+        if batch_type == "img2img":
+            self._batch_input_image = self._image_display.get_pil_image()
+
+        # Get selected GPUs
+        gpu_indices = self._batch_widget.selected_gpu_indices
+        if not gpu_indices:
+            gpu_indices = [0]  # Default to GPU 0
+
+        self._status_bar.set_text(f"Starting batch generation: {self._batch_count} images on {len(gpu_indices)} GPU(s)...")
+
+        # Disable batch widget and toolbar during generation
+        self._batch_widget.set_sensitive_all(False)
+        self._toolbar.set_state(GenerationState.GENERATING)
+
+        # Start batch generation in a background thread
+        thread = threading.Thread(
+            target=self._run_parallel_batch,
+            args=(batch_type, gpu_indices),
+            daemon=True
+        )
+        thread.start()
+
+    def _run_parallel_batch(self, batch_type: str, gpu_indices: list[int]):
+        """Run parallel batch generation across multiple GPUs."""
+        import torch
+        from PIL import Image
+
+        try:
+            # Get generation parameters
+            positive = self._prompt_panel.get_positive_prompt()
+            negative = self._prompt_panel.get_negative_prompt()
+            params = self._params_widget.get_params(positive, negative)
+            strength = self._params_widget.get_strength()
+
+            # Get model info
+            checkpoint_path = str(model_manager.loaded.checkpoint.path)
+            model_type = model_manager.loaded.checkpoint.components.model_type
+            vae_path = str(model_manager.loaded.vae.path) if model_manager.loaded.vae else None
+
+            # Get LoRAs
+            loras = self._get_active_loras()
+
+            # Get output directory
+            output_dir = self._thumbnail_gallery.get_output_directory()
+
+            # Get upscale settings
+            upscale_enabled = self._upscale_widget.is_enabled
+            upscale_model_path = self._upscale_widget.selected_model_path
+            upscale_model_name = self._upscale_widget.selected_model_name if upscale_enabled else ""
+
+            # Get model names for metadata
+            checkpoint_name = model_manager.loaded.checkpoint.name
+            vae_name = model_manager.loaded.vae.name if model_manager.loaded.vae else ""
+
+            GLib.idle_add(self._status_bar.set_text, f"Loading models on {len(gpu_indices)} GPU(s)...")
+
+            # Create backend instances for each GPU and load models
+            self._gpu_backends = {}
+            for i, gpu_idx in enumerate(gpu_indices):
+                if self._batch_cancelled:
+                    break
+
+                GLib.idle_add(
+                    self._status_bar.set_text,
+                    f"Loading model on GPU {gpu_idx} ({i + 1}/{len(gpu_indices)})..."
+                )
+
+                backend = DiffusersBackend(gpu_index=gpu_idx)
+                success = backend.load_model(
+                    checkpoint_path=checkpoint_path,
+                    model_type=model_type,
+                    vae_path=vae_path,
+                )
+
+                if not success:
+                    GLib.idle_add(
+                        self._status_bar.set_text,
+                        f"Failed to load model on GPU {gpu_idx}"
+                    )
+                    continue
+
+                # Load LoRAs if any
+                if loras:
+                    backend.load_loras(loras)
+
+                self._gpu_backends[gpu_idx] = backend
+
+            if not self._gpu_backends:
+                GLib.idle_add(self._end_batch_generation)
+                return
+
+            GLib.idle_add(
+                self._status_bar.set_text,
+                f"Models loaded on {len(self._gpu_backends)} GPU(s). Starting generation..."
+            )
+
+            # Create a queue of generation tasks
+            remaining = self._batch_count
+            completed = 0
+            gpu_list = list(self._gpu_backends.keys())
+
+            # Use ThreadPoolExecutor to run generations in parallel
+            with ThreadPoolExecutor(max_workers=len(self._gpu_backends)) as executor:
+                futures = {}
+
+                while remaining > 0 or futures:
+                    if self._batch_cancelled:
+                        # Cancel pending futures
+                        for future in futures:
+                            future.cancel()
+                        break
+
+                    # Submit new tasks for available GPUs
+                    while remaining > 0 and len(futures) < len(self._gpu_backends):
+                        # Find an available GPU
+                        busy_gpus = {futures[f] for f in futures}
+                        available_gpus = [g for g in gpu_list if g not in busy_gpus]
+
+                        if not available_gpus:
+                            break
+
+                        gpu_idx = available_gpus[0]
+                        backend = self._gpu_backends[gpu_idx]
+
+                        # Create params with random seed for this generation
+                        gen_params = GenerationParams(
+                            prompt=params.prompt,
+                            negative_prompt=params.negative_prompt,
+                            width=params.width,
+                            height=params.height,
+                            steps=params.steps,
+                            cfg_scale=params.cfg_scale,
+                            seed=-1,  # Random seed for each
+                            sampler=params.sampler,
+                            scheduler=params.scheduler,
+                        )
+
+                        # Submit generation task
+                        if batch_type == "generate":
+                            future = executor.submit(
+                                self._generate_on_gpu,
+                                backend, gen_params, output_dir, upscale_enabled, upscale_model_path,
+                                upscale_model_name, checkpoint_name, vae_name, model_type
+                            )
+                        else:  # img2img
+                            future = executor.submit(
+                                self._generate_img2img_on_gpu,
+                                backend, gen_params, self._batch_input_image, strength,
+                                output_dir, upscale_enabled, upscale_model_path,
+                                upscale_model_name, checkpoint_name, vae_name, model_type
+                            )
+
+                        futures[future] = gpu_idx
+                        remaining -= 1
+
+                    # Wait for at least one to complete
+                    if futures:
+                        done_futures = []
+                        for future in list(futures.keys()):
+                            if future.done():
+                                done_futures.append(future)
+
+                        if not done_futures:
+                            # Wait a bit and check again
+                            import time
+                            time.sleep(0.1)
+                            continue
+
+                        for future in done_futures:
+                            gpu_idx = futures.pop(future)
+                            try:
+                                result_path, result_image = future.result()
+                                completed += 1
+
+                                # Update UI with result
+                                if result_path and result_image:
+                                    GLib.idle_add(
+                                        self._on_batch_image_complete,
+                                        result_path, result_image, completed, self._batch_count
+                                    )
+                            except Exception as e:
+                                print(f"Generation error on GPU {gpu_idx}: {e}")
+                                completed += 1
+
+                            GLib.idle_add(
+                                self._status_bar.set_text,
+                                f"Batch progress: {completed}/{self._batch_count}"
+                            )
+
+        except Exception as e:
+            import traceback
+            print(f"Batch generation error: {e}")
+            traceback.print_exc()
+            GLib.idle_add(self._status_bar.set_text, f"Batch error: {e}")
+
+        finally:
+            # Clean up GPU backends
+            self._cleanup_gpu_backends()
+            GLib.idle_add(self._end_batch_generation)
+
+    def _generate_on_gpu(self, backend: DiffusersBackend, params: GenerationParams,
+                         output_dir: Path, upscale_enabled: bool, upscale_model_path: str,
+                         upscale_model_name: str, checkpoint_name: str, vae_name: str,
+                         model_type: str):
+        """Generate a single image on a specific GPU backend."""
+        from src.utils.metadata import save_image_with_metadata, GenerationMetadata
+
+        image = backend.generate(params)
+        if image is None:
+            return None, None
+
+        # Get actual seed used
+        actual_seed = backend.get_actual_seed(params) if params.seed == -1 else params.seed
+
+        # Track original size for metadata
+        original_width = image.width
+        original_height = image.height
+        upscale_factor = 4
+
+        # Upscale if enabled
+        if upscale_enabled and upscale_model_path:
+            upscaled = upscale_backend.upscale(image, upscale_model_path)
+            if upscaled:
+                image = upscaled
+
+        # Save image
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"batch_{timestamp}_seed{actual_seed}.png"
+        output_path = output_dir / filename
+
+        # Create metadata
+        metadata = GenerationMetadata(
+            checkpoint=checkpoint_name,
+            vae=vae_name,
+            prompt=params.prompt,
+            negative_prompt=params.negative_prompt,
+            width=image.width,
+            height=image.height,
+            steps=params.steps,
+            cfg_scale=params.cfg_scale,
+            seed=actual_seed,
+            sampler=params.sampler,
+            scheduler=params.scheduler,
+            model_type=model_type,
+            upscale_enabled=upscale_enabled,
+            upscale_model=upscale_model_name if upscale_enabled else "",
+            upscale_factor=upscale_factor if upscale_enabled else 0,
+            original_width=original_width if upscale_enabled else 0,
+            original_height=original_height if upscale_enabled else 0,
+        )
+
+        save_image_with_metadata(image, output_path, metadata)
+
+        return output_path, image
+
+    def _generate_img2img_on_gpu(self, backend: DiffusersBackend, params: GenerationParams,
+                                  input_image, strength: float, output_dir: Path,
+                                  upscale_enabled: bool, upscale_model_path: str,
+                                  upscale_model_name: str, checkpoint_name: str, vae_name: str,
+                                  model_type: str):
+        """Generate a single img2img image on a specific GPU backend."""
+        from src.utils.metadata import save_image_with_metadata, GenerationMetadata
+
+        image = backend.generate_img2img(params, input_image, strength)
+        if image is None:
+            return None, None
+
+        # Get actual seed used
+        actual_seed = backend.get_actual_seed(params) if params.seed == -1 else params.seed
+
+        # Track original size for metadata
+        original_width = image.width
+        original_height = image.height
+        upscale_factor = 4
+
+        # Upscale if enabled
+        if upscale_enabled and upscale_model_path:
+            upscaled = upscale_backend.upscale(image, upscale_model_path)
+            if upscaled:
+                image = upscaled
+
+        # Save image
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"batch_img2img_{timestamp}_seed{actual_seed}.png"
+        output_path = output_dir / filename
+
+        # Create metadata
+        metadata = GenerationMetadata(
+            checkpoint=checkpoint_name,
+            vae=vae_name,
+            prompt=params.prompt,
+            negative_prompt=params.negative_prompt,
+            width=image.width,
+            height=image.height,
+            steps=params.steps,
+            cfg_scale=params.cfg_scale,
+            seed=actual_seed,
+            sampler=params.sampler,
+            scheduler=params.scheduler,
+            model_type=model_type,
+            upscale_enabled=upscale_enabled,
+            upscale_model=upscale_model_name if upscale_enabled else "",
+            upscale_factor=upscale_factor if upscale_enabled else 0,
+            original_width=original_width if upscale_enabled else 0,
+            original_height=original_height if upscale_enabled else 0,
+            is_img2img=True,
+            img2img_strength=strength,
+        )
+
+        save_image_with_metadata(image, output_path, metadata)
+
+        return output_path, image
+
+    def _on_batch_image_complete(self, path: Path, image, completed: int, total: int):
+        """Handle completion of a single batch image (called on main thread)."""
+        # Display the latest image
+        self._image_display.set_image(image)
+
+        # Add to thumbnail gallery
+        self._thumbnail_gallery.add_image(path, image)
+
+        # Update status
+        self._status_bar.set_text(f"Batch progress: {completed}/{total} - {path.name}")
+
+        # Update toolbar
+        self._toolbar.set_has_image(True)
+        self._update_upscale_button_state()
+
+    def _cleanup_gpu_backends(self):
+        """Clean up GPU backend instances."""
+        for gpu_idx, backend in self._gpu_backends.items():
+            try:
+                backend.unload_model()
+            except Exception as e:
+                print(f"Error unloading model from GPU {gpu_idx}: {e}")
+        self._gpu_backends.clear()
+
+        # Force garbage collection
+        import gc
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    def _continue_batch_generation(self):
+        """Continue with the next image in the batch (legacy, not used in parallel mode)."""
+        pass  # Parallel batch handles continuation internally
+
+    def _end_batch_generation(self):
+        """End the batch generation sequence."""
+        count = self._batch_count
+        self._batch_mode = False
+        self._batch_type = None
+        self._batch_count = 0
+        self._batch_current = 0
+        self._batch_input_image = None
+        self._batch_cancelled = False
+
+        # Re-enable batch widget and toolbar
+        self._batch_widget.set_sensitive_all(True)
+        self._toolbar.set_state(GenerationState.IDLE)
+
+        self._status_bar.set_text(f"Batch generation complete: {count} images generated")
+
     def _on_img2img(self):
         """Handle Image to Image button click."""
         # Check if a checkpoint is selected
@@ -571,15 +979,22 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please enter a positive prompt")
             return
 
-        # Ensure model is loaded and optimized if needed
+        # For batch mode, skip normal model loading - batch handles its own
+        batch_count = self._batch_widget.batch_count
+        if batch_count > 1:
+            self._start_batch_generation("img2img")
+            return
+
+        # Ensure model is loaded and optimized if needed (single image only)
         if not self._ensure_model_ready("img2img"):
             return
 
         self._do_img2img()
 
     def _do_img2img(self):
-        """Perform the actual img2img generation (called after models are loaded)."""
+        """Perform the actual img2img generation (called after models are loaded, single image only)."""
         input_image = self._image_display.get_pil_image()
+
         positive = self._prompt_panel.get_positive_prompt()
         negative = self._prompt_panel.get_negative_prompt()
         params = self._params_widget.get_params(positive, negative)
@@ -612,6 +1027,10 @@ class WorkScreen(Gtk.Box):
 
     def _on_cancel(self):
         """Handle Cancel button click."""
+        # Cancel batch mode if active
+        if self._batch_mode:
+            self._batch_cancelled = True
+            self._status_bar.set_text(f"Cancelling batch generation...")
         generation_service.cancel()
 
     def _on_inpaint_mode_changed(self, enabled: bool):
@@ -619,9 +1038,13 @@ class WorkScreen(Gtk.Box):
         self._image_display.set_inpaint_mode(enabled)
         if enabled:
             self._center_paned.add_css_class("center-panel-edit-mode")
+            # Disable batch during inpaint mode
+            self._batch_widget.set_sensitive_all(False)
             self._status_bar.set_text("Inpaint mode enabled - select a mask tool to draw")
         else:
             self._center_paned.remove_css_class("center-panel-edit-mode")
+            # Re-enable batch when exiting inpaint mode
+            self._batch_widget.set_sensitive_all(True)
             self._status_bar.set_text("Inpaint mode disabled")
 
     def _on_inpaint_tool_changed(self, tool: InpaintTool):
@@ -755,7 +1178,7 @@ class WorkScreen(Gtk.Box):
         self._toolbar.set_step_progress(step, total)
 
     def _on_generation_complete(self, result: GenerationResult):
-        """Handle generation completion."""
+        """Handle generation completion (for single-image generation via generation_service)."""
         self._toolbar.clear_progress()
 
         if result.success and result.image:
@@ -784,7 +1207,8 @@ class WorkScreen(Gtk.Box):
             self._toolbar.set_has_image(True)
             self._update_upscale_button_state()
         else:
-            self._status_bar.set_text(f"Generation failed: {result.error or 'Unknown error'}")
+            error_msg = f"Generation failed: {result.error or 'Unknown error'}"
+            self._status_bar.set_text(error_msg)
 
     def _on_thumbnail_selected(self, path: Path):
         """Handle thumbnail selection."""
@@ -840,6 +1264,11 @@ class WorkScreen(Gtk.Box):
     def _on_upscale_settings_changed(self):
         """Handle upscale settings change (enabled/model changed)."""
         self._update_upscale_button_state()
+
+    def _on_batch_settings_changed(self):
+        """Handle batch settings change."""
+        # Batch mode affects generation behavior but doesn't need immediate UI updates
+        pass
 
     def _update_upscale_button_state(self):
         """Update the upscale button state based on current conditions."""
