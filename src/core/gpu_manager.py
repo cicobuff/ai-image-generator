@@ -15,6 +15,8 @@ class GPUInfo:
     total_memory: int  # bytes
     used_memory: int  # bytes
     free_memory: int  # bytes
+    utilization: int  # GPU utilization percentage (0-100)
+    temperature: int  # GPU temperature in Celsius
 
     @property
     def total_memory_gb(self) -> float:
@@ -100,12 +102,29 @@ class GPUManager:
 
             memory_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
 
+            # Get GPU utilization
+            try:
+                utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                gpu_util = utilization.gpu
+            except pynvml.NVMLError:
+                gpu_util = 0
+
+            # Get GPU temperature
+            try:
+                temperature = pynvml.nvmlDeviceGetTemperature(
+                    handle, pynvml.NVML_TEMPERATURE_GPU
+                )
+            except pynvml.NVMLError:
+                temperature = 0
+
             return GPUInfo(
                 index=index,
                 name=name,
                 total_memory=memory_info.total,
                 used_memory=memory_info.used,
                 free_memory=memory_info.free,
+                utilization=gpu_util,
+                temperature=temperature,
             )
         except pynvml.NVMLError as e:
             print(f"Error getting GPU {index} info: {e}")

@@ -379,6 +379,11 @@ dropdown.purple-button > button > box > image {
     font-size: 0.85em;
 }
 
+/* Monospace font for fixed-width numeric displays */
+.monospace {
+    font-family: monospace;
+}
+
 /* Generation parameters */
 .param-row {
     margin-bottom: 6px;
