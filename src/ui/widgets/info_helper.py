@@ -170,6 +170,36 @@ SECTION_INFO = {
         "• Create new subfolders for different projects\n\n"
         "Images are saved with metadata that can be restored."
     ),
+    "prompt_management": (
+        "Prompt Management\n\n"
+        "Create reusable word lists for dynamic prompts:\n"
+        "• List: Your saved prompt lists (quality tags, styles, etc.)\n"
+        "• Words: Contents of the selected list\n"
+        "• Checkbox: Enable/disable a list for generation\n"
+        "• Number: How many words to randomly pick (1-10)\n\n"
+        "During generation, random words from checked lists\n"
+        "are prepended to your positive prompt.\n\n"
+        "Each batch image gets a fresh random selection!"
+    ),
+    "prompt_list": (
+        "Prompt Lists\n\n"
+        "Manage your word/phrase collections:\n"
+        "• Click a list to select it and view its words\n"
+        "• Check the box to include it in generation\n"
+        "• Set the number to control random picks\n"
+        "• + button: Create a new list\n"
+        "• - button: Delete the selected list\n\n"
+        "Lists are saved as text files in models/prompt-lists/"
+    ),
+    "prompt_words": (
+        "Word List\n\n"
+        "Words/phrases in the selected prompt list:\n"
+        "• Click a word to select it\n"
+        "• + button: Add a new word to the list\n"
+        "• - button: Remove the selected word\n\n"
+        "Each word should be a tag or short phrase\n"
+        "(e.g., 'masterpiece', 'best quality', '8k resolution')"
+    ),
 }
 
 # Label tooltips
@@ -206,4 +236,11 @@ LABEL_TOOLTIPS = {
 
     # LoRA
     "lora_weight": "LoRA influence strength. 1.0 = full effect, 0.5 = half effect, 0.0 = disabled.",
+
+    # Prompt Management
+    "prompt_list": "Your saved prompt lists. Check to include in generation, set number for random picks.",
+    "prompt_words": "Words in the selected list. These are randomly selected during generation.",
+    "prompt_count": "Number of words to randomly pick from this list (1-10). If greater than available words, all are used.",
+    "positive_prompt": "Describe what you want in the image. Random words from checked lists are prepended automatically.",
+    "negative_prompt": "Describe what you want to avoid. These concepts will be suppressed in generation.",
 }

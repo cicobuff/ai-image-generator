@@ -9,6 +9,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib
 
 from src.core.config import config_manager
+from src.ui.widgets.info_helper import InfoButton, SECTION_INFO, add_hover_tooltip, LABEL_TOOLTIPS
 
 
 class PromptListItem(Gtk.Box):
@@ -58,6 +59,7 @@ class PromptListItem(Gtk.Box):
         self._count_dropdown.set_model(count_model)
         self._count_dropdown.set_selected(0)  # Default to "1"
         self._count_dropdown.add_css_class("prompt-list-count")
+        self._count_dropdown.set_tooltip_text(LABEL_TOOLTIPS.get("prompt_count", "Number of words to randomly select"))
         self._count_dropdown.connect("notify::selected", self._on_count_value_changed)
         self.append(self._count_dropdown)
 
@@ -138,7 +140,7 @@ class PromptManagerPanel(Gtk.Box):
         self._paned.set_resize_start_child(True)
         self._paned.set_shrink_start_child(True)
 
-        # Lists header with add/remove buttons
+        # Lists header with info button and add/remove buttons
         lists_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         lists_box.append(lists_header)
 
@@ -146,9 +148,19 @@ class PromptManagerPanel(Gtk.Box):
         lists_label.add_css_class("section-header")
         lists_label.add_css_class("caption")
         lists_label.set_halign(Gtk.Align.START)
-        lists_label.set_hexpand(True)
         lists_label.set_margin_start(8)  # Add left padding
+        add_hover_tooltip(lists_label, LABEL_TOOLTIPS.get("prompt_list", ""))
         lists_header.append(lists_label)
+
+        # Info button for List section
+        lists_info_btn = InfoButton(SECTION_INFO.get("prompt_list", ""))
+        lists_info_btn.set_valign(Gtk.Align.CENTER)
+        lists_header.append(lists_info_btn)
+
+        # Spacer to push buttons to the right
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        lists_header.append(spacer)
 
         # Add list button (icon with border)
         self._add_list_btn = Gtk.Button.new_from_icon_name("list-add-symbolic")
@@ -181,7 +193,7 @@ class PromptManagerPanel(Gtk.Box):
         self._paned.set_resize_end_child(True)
         self._paned.set_shrink_end_child(True)
 
-        # Words header with add/remove buttons
+        # Words header with info button and add/remove buttons
         words_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         words_box.append(words_header)
 
@@ -189,9 +201,19 @@ class PromptManagerPanel(Gtk.Box):
         words_label.add_css_class("section-header")
         words_label.add_css_class("caption")
         words_label.set_halign(Gtk.Align.START)
-        words_label.set_hexpand(True)
         words_label.set_margin_start(8)  # Add left padding
+        add_hover_tooltip(words_label, LABEL_TOOLTIPS.get("prompt_words", ""))
         words_header.append(words_label)
+
+        # Info button for Words section
+        words_info_btn = InfoButton(SECTION_INFO.get("prompt_words", ""))
+        words_info_btn.set_valign(Gtk.Align.CENTER)
+        words_header.append(words_info_btn)
+
+        # Spacer to push buttons to the right
+        words_spacer = Gtk.Box()
+        words_spacer.set_hexpand(True)
+        words_header.append(words_spacer)
 
         # Add word button (icon with border)
         self._add_word_btn = Gtk.Button.new_from_icon_name("list-add-symbolic")

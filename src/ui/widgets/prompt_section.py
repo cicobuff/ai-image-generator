@@ -8,6 +8,7 @@ from gi.repository import Gtk
 
 from src.ui.widgets.prompt_manager import PromptManagerPanel
 from src.ui.widgets.prompt_entry import PromptEntry
+from src.ui.widgets.info_helper import SectionHeader, SECTION_INFO, add_hover_tooltip, LABEL_TOOLTIPS
 
 
 class PromptSection(Gtk.Box):
@@ -22,10 +23,8 @@ class PromptSection(Gtk.Box):
 
     def _build_ui(self):
         """Build the section UI."""
-        # Section header
-        header = Gtk.Label(label="Prompt Management")
-        header.add_css_class("section-header")
-        header.set_halign(Gtk.Align.START)
+        # Section header with info button
+        header = SectionHeader("Prompt Management", SECTION_INFO.get("prompt_management"))
         header.set_margin_bottom(8)
         self.append(header)
 
@@ -41,11 +40,12 @@ class PromptSection(Gtk.Box):
         self._main_paned.set_resize_start_child(True)
         self._main_paned.set_shrink_start_child(True)
 
-        # "Prompts" label for left side
+        # "Prompts" label for left side with tooltip
         prompts_label = Gtk.Label(label="Prompts")
         prompts_label.add_css_class("section-header")
         prompts_label.add_css_class("caption")
         prompts_label.set_halign(Gtk.Align.START)
+        add_hover_tooltip(prompts_label, "Enter your positive and negative prompts here. Random words from checked lists are added to positive prompt.")
         prompts_box.append(prompts_label)
 
         # Vertical paned for positive/negative prompts
