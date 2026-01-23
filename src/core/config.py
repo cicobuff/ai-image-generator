@@ -57,6 +57,9 @@ class WindowConfig:
     prompt_section_width: int = -1  # -1 means auto (use default)
     prompt_section_split: int = -1  # -1 means auto (equal split)
     prompt_manager_split: int = -1  # -1 means auto (equal split)
+    # Prompt font sizes (in points, 0 means use default)
+    positive_prompt_font_size: int = 0
+    negative_prompt_font_size: int = 0
 
 
 @dataclass

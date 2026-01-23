@@ -279,6 +279,12 @@ class WorkScreen(Gtk.Box):
         if window_config.prompt_manager_split > 0:
             self._prompt_section.prompt_manager.set_paned_position(window_config.prompt_manager_split)
 
+        # Restore prompt font sizes from config
+        self._prompt_section.set_font_sizes(
+            window_config.positive_prompt_font_size,
+            window_config.negative_prompt_font_size,
+        )
+
         return self._center_paned
 
     def _create_right_panel(self) -> Gtk.Widget:
@@ -1816,4 +1822,8 @@ class WorkScreen(Gtk.Box):
         positions["prompt_section_split"] = prompt_positions.get("prompts_split", -1)
         # Add prompt manager internal positions
         positions["prompt_manager_split"] = self._prompt_section.prompt_manager.get_paned_position()
+        # Add prompt font sizes
+        font_sizes = self._prompt_section.get_font_sizes()
+        positions["positive_prompt_font_size"] = font_sizes.get("positive", 0)
+        positions["negative_prompt_font_size"] = font_sizes.get("negative", 0)
         return positions

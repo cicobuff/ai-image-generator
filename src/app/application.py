@@ -121,6 +121,9 @@ class AIImageGeneratorApp(Gtk.Application):
             window_config.prompt_section_width = panel_positions.get("prompt_section_width", -1)
             window_config.prompt_section_split = panel_positions.get("prompt_section_split", -1)
             window_config.prompt_manager_split = panel_positions.get("prompt_manager_split", -1)
+            # Prompt font sizes
+            window_config.positive_prompt_font_size = panel_positions.get("positive_prompt_font_size", 0)
+            window_config.negative_prompt_font_size = panel_positions.get("negative_prompt_font_size", 0)
 
         config_manager.save()
 

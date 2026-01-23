@@ -169,3 +169,17 @@ class PromptSection(Gtk.Box):
         if "prompts_split" in positions:
             self._prompts_paned.set_position(positions["prompts_split"])
             self._prompts_split_restored = True
+
+    def get_font_sizes(self) -> dict:
+        """Get the current font sizes for saving."""
+        return {
+            "positive": self._positive_entry.get_font_size(),
+            "negative": self._negative_entry.get_font_size(),
+        }
+
+    def set_font_sizes(self, positive_size: int, negative_size: int):
+        """Restore font sizes."""
+        if positive_size > 0:
+            self._positive_entry.set_font_size(positive_size)
+        if negative_size > 0:
+            self._negative_entry.set_font_size(negative_size)

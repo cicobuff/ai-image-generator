@@ -571,3 +571,11 @@ dropdown.purple-button > button > box > image {
     min-width: 32px;
     padding: 0 4px;
 }
+
+/* Prompt font size buttons */
+.prompt-font-btn {
+    min-width: 20px;
+    min-height: 20px;
+    padding: 2px;
+    -gtk-icon-size: 14px;
+}

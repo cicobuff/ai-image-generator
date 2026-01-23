@@ -2,7 +2,13 @@
 
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk
+from gi.repository import Gtk, Pango
+
+# Font size constants
+DEFAULT_FONT_SIZE = 10  # Default font size in points
+MIN_FONT_SIZE = 8
+MAX_FONT_SIZE = 24
+FONT_SIZE_STEP = 1
 
 
 class PromptEntry(Gtk.Box):
@@ -11,19 +17,41 @@ class PromptEntry(Gtk.Box):
     def __init__(self, label: str, is_positive: bool = True, placeholder: str = ""):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self._is_positive = is_positive
+        self._font_size = DEFAULT_FONT_SIZE
 
         self._build_ui(label, placeholder)
 
     def _build_ui(self, label_text: str, placeholder: str):
         """Build the widget UI."""
+        # Header row with label and font size controls
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self.append(header)
+
         # Label
         label = Gtk.Label(label=label_text)
         label.set_halign(Gtk.Align.START)
+        label.set_hexpand(True)
         if self._is_positive:
             label.add_css_class("prompt-label-positive")
         else:
             label.add_css_class("prompt-label-negative")
-        self.append(label)
+        header.append(label)
+
+        # Font size decrease button
+        self._decrease_btn = Gtk.Button.new_from_icon_name("zoom-out-symbolic")
+        self._decrease_btn.add_css_class("flat")
+        self._decrease_btn.add_css_class("prompt-font-btn")
+        self._decrease_btn.set_tooltip_text("Decrease font size")
+        self._decrease_btn.connect("clicked", self._on_decrease_font)
+        header.append(self._decrease_btn)
+
+        # Font size increase button
+        self._increase_btn = Gtk.Button.new_from_icon_name("zoom-in-symbolic")
+        self._increase_btn.add_css_class("flat")
+        self._increase_btn.add_css_class("prompt-font-btn")
+        self._increase_btn.set_tooltip_text("Increase font size")
+        self._increase_btn.connect("clicked", self._on_increase_font)
+        header.append(self._increase_btn)
 
         # Frame for border styling
         frame = Gtk.Frame()
@@ -51,6 +79,47 @@ class PromptEntry(Gtk.Box):
             pass
 
         scrolled.set_child(self._text_view)
+
+    def _on_increase_font(self, button):
+        """Increase font size."""
+        if self._font_size < MAX_FONT_SIZE:
+            self.set_font_size(self._font_size + FONT_SIZE_STEP)
+
+    def _on_decrease_font(self, button):
+        """Decrease font size."""
+        if self._font_size > MIN_FONT_SIZE:
+            self.set_font_size(self._font_size - FONT_SIZE_STEP)
+
+    def _update_button_sensitivity(self):
+        """Update button sensitivity based on current font size."""
+        self._decrease_btn.set_sensitive(self._font_size > MIN_FONT_SIZE)
+        self._increase_btn.set_sensitive(self._font_size < MAX_FONT_SIZE)
+
+    def _apply_font_size(self):
+        """Apply the current font size to the text view."""
+        font_desc = Pango.FontDescription()
+        font_desc.set_size(self._font_size * Pango.SCALE)
+
+        # Get or create a CSS provider for this text view
+        css = f"textview {{ font-size: {self._font_size}pt; }}"
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css.encode())
+
+        # Apply to the text view
+        self._text_view.get_style_context().add_provider(
+            provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+        self._update_button_sensitivity()
+
+    def get_font_size(self) -> int:
+        """Get the current font size."""
+        return self._font_size
+
+    def set_font_size(self, size: int):
+        """Set the font size."""
+        self._font_size = max(MIN_FONT_SIZE, min(MAX_FONT_SIZE, size))
+        self._apply_font_size()
 
     def get_text(self) -> str:
         """Get the current text."""
