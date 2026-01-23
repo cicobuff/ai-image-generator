@@ -7,6 +7,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk
 
 from src.core.model_manager import model_manager, ModelInfo, ModelType
+from src.ui.widgets.info_helper import SectionHeader, InfoButton, add_hover_tooltip, SECTION_INFO, LABEL_TOOLTIPS
 
 
 class UpscaleSettingsWidget(Gtk.Box):
@@ -27,7 +28,7 @@ class UpscaleSettingsWidget(Gtk.Box):
 
     def _build_ui(self):
         """Build the widget UI."""
-        # Header row with title and enable checkbox
+        # Header row with title, info button, and enable checkbox
         header_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         self.append(header_row)
 
@@ -35,12 +36,21 @@ class UpscaleSettingsWidget(Gtk.Box):
         header = Gtk.Label(label="Upscaling")
         header.add_css_class("section-header")
         header.set_halign(Gtk.Align.START)
-        header.set_hexpand(True)
         header_row.append(header)
+
+        # Info button
+        info_button = InfoButton(SECTION_INFO["upscale"])
+        header_row.append(info_button)
+
+        # Spacer to push checkbox to the right
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        header_row.append(spacer)
 
         # Enable checkbox (compact, on same line as header)
         self._enable_checkbox = Gtk.CheckButton(label="Enable")
         self._enable_checkbox.add_css_class("caption")
+        add_hover_tooltip(self._enable_checkbox, LABEL_TOOLTIPS["upscale_enable"])
         self._enable_checkbox.connect("toggled", self._on_enable_toggled)
         header_row.append(self._enable_checkbox)
 
@@ -52,6 +62,7 @@ class UpscaleSettingsWidget(Gtk.Box):
         model_label.set_size_request(self.LABEL_WIDTH, -1)
         model_label.set_halign(Gtk.Align.START)
         model_label.add_css_class("caption")
+        add_hover_tooltip(model_label, LABEL_TOOLTIPS["upscale_model"])
         model_row.append(model_label)
 
         self._model_dropdown = Gtk.DropDown()

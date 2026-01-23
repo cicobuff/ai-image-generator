@@ -27,6 +27,7 @@ from src.utils.constants import (
 )
 from src.core.config import config_manager
 from src.backends.diffusers_backend import GenerationParams
+from src.ui.widgets.info_helper import SectionHeader, add_hover_tooltip, SECTION_INFO, LABEL_TOOLTIPS
 
 
 class GenerationParamsWidget(Gtk.Box):
@@ -49,10 +50,8 @@ class GenerationParamsWidget(Gtk.Box):
 
     def _build_ui(self):
         """Build the parameters UI."""
-        # Header
-        header = Gtk.Label(label="Generation Parameters")
-        header.add_css_class("section-header")
-        header.set_halign(Gtk.Align.START)
+        # Header with info button
+        header = SectionHeader("Generation Parameters", SECTION_INFO["parameters"])
         self.append(header)
 
         # Size row: Label | Dropdown | W: spin | H: spin
@@ -76,6 +75,7 @@ class GenerationParamsWidget(Gtk.Box):
 
         # Size label
         label = self._create_label("Size")
+        add_hover_tooltip(label, LABEL_TOOLTIPS["size"])
         row.append(label)
 
         # Size preset dropdown
@@ -117,6 +117,7 @@ class GenerationParamsWidget(Gtk.Box):
 
         # Sampler
         sampler_label = self._create_label("Sampler")
+        add_hover_tooltip(sampler_label, LABEL_TOOLTIPS["sampler"])
         row.append(sampler_label)
 
         sampler_names = list(SAMPLERS.keys())
@@ -128,6 +129,7 @@ class GenerationParamsWidget(Gtk.Box):
         scheduler_label = Gtk.Label(label="Sched")
         scheduler_label.add_css_class("caption")
         scheduler_label.set_margin_start(8)
+        add_hover_tooltip(scheduler_label, LABEL_TOOLTIPS["scheduler"])
         row.append(scheduler_label)
 
         scheduler_names = SCHEDULERS
@@ -143,6 +145,7 @@ class GenerationParamsWidget(Gtk.Box):
 
         # Steps
         steps_label = self._create_label("Steps")
+        add_hover_tooltip(steps_label, LABEL_TOOLTIPS["steps"])
         row.append(steps_label)
 
         self._steps_spin = Gtk.SpinButton.new_with_range(MIN_STEPS, MAX_STEPS, 1)
@@ -154,6 +157,7 @@ class GenerationParamsWidget(Gtk.Box):
         cfg_label = Gtk.Label(label="CFG")
         cfg_label.add_css_class("caption")
         cfg_label.set_margin_start(8)
+        add_hover_tooltip(cfg_label, LABEL_TOOLTIPS["cfg_scale"])
         row.append(cfg_label)
 
         self._cfg_spin = Gtk.SpinButton.new_with_range(
@@ -171,7 +175,7 @@ class GenerationParamsWidget(Gtk.Box):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
 
         label = self._create_label("Strength")
-        label.set_tooltip_text("How much to transform the input image (0=no change, 1=full generation)")
+        add_hover_tooltip(label, LABEL_TOOLTIPS["strength"])
         row.append(label)
 
         self._strength_spin = Gtk.SpinButton.new_with_range(0.0, 1.0, 0.05)
@@ -188,6 +192,7 @@ class GenerationParamsWidget(Gtk.Box):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
 
         label = self._create_label("Seed")
+        add_hover_tooltip(label, LABEL_TOOLTIPS["seed"])
         row.append(label)
 
         self._seed_spin = Gtk.SpinButton.new_with_range(-1, 2**32 - 1, 1)

@@ -8,6 +8,8 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib
 
+from src.ui.widgets.info_helper import SectionHeader, InfoButton, add_hover_tooltip, SECTION_INFO, LABEL_TOOLTIPS
+
 
 @dataclass
 class LoRASelection:
@@ -61,7 +63,7 @@ class LoRAItemRow(Gtk.Box):
         self._weight_spin.set_value(1.0)
         self._weight_spin.set_digits(2)
         self._weight_spin.set_width_chars(4)
-        self._weight_spin.set_tooltip_text("LoRA weight (strength)")
+        add_hover_tooltip(self._weight_spin, LABEL_TOOLTIPS["lora_weight"])
         self._weight_spin.connect("value-changed", self._on_weight_changed)
         self.append(self._weight_spin)
 
@@ -182,8 +184,16 @@ class LoRASelectorPanel(Gtk.Box):
         title = Gtk.Label(label="LoRA")
         title.add_css_class("section-header")
         title.set_halign(Gtk.Align.START)
-        title.set_hexpand(True)
         header_row.append(title)
+
+        # Info button
+        info_button = InfoButton(SECTION_INFO["lora"])
+        header_row.append(info_button)
+
+        # Spacer
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        header_row.append(spacer)
 
         # Refresh button
         refresh_btn = Gtk.Button()

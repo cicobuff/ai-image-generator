@@ -10,6 +10,7 @@ from gi.repository import Gtk, GLib
 from src.core.gpu_manager import gpu_manager, GPUInfo
 from src.core.config import config_manager
 from src.utils.constants import GPU_MEMORY_UPDATE_INTERVAL
+from src.ui.widgets.info_helper import SectionHeader, SECTION_INFO
 
 
 class GPUUsageIndicator(Gtk.DrawingArea):
@@ -159,10 +160,8 @@ class MonitoringDisplay(Gtk.Box):
 
     def _build_ui(self):
         """Build the monitoring display UI."""
-        # Header
-        header = Gtk.Label(label="Monitoring")
-        header.add_css_class("section-header")
-        header.set_halign(Gtk.Align.START)
+        # Header with info button
+        header = SectionHeader("Monitoring", SECTION_INFO["monitoring"])
         self.append(header)
 
         # Container for bars

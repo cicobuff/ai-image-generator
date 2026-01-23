@@ -7,6 +7,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk
 
 from src.core.gpu_manager import gpu_manager
+from src.ui.widgets.info_helper import SectionHeader, add_hover_tooltip, SECTION_INFO, LABEL_TOOLTIPS
 
 
 class BatchSettingsWidget(Gtk.Box):
@@ -23,10 +24,8 @@ class BatchSettingsWidget(Gtk.Box):
 
     def _build_ui(self):
         """Build the widget UI."""
-        # Header
-        header = Gtk.Label(label="Batch")
-        header.add_css_class("section-header")
-        header.set_halign(Gtk.Align.START)
+        # Header with info button
+        header = SectionHeader("Batch", SECTION_INFO["batch"])
         self.append(header)
 
         # Count row: Label | SpinButton
@@ -37,6 +36,7 @@ class BatchSettingsWidget(Gtk.Box):
         count_label.set_size_request(self.LABEL_WIDTH, -1)
         count_label.set_halign(Gtk.Align.START)
         count_label.add_css_class("caption")
+        add_hover_tooltip(count_label, LABEL_TOOLTIPS["batch_count"])
         count_row.append(count_label)
 
         self._count_spin = Gtk.SpinButton.new_with_range(1, 100, 1)
@@ -54,6 +54,7 @@ class BatchSettingsWidget(Gtk.Box):
         gpu_label = Gtk.Label(label="GPUs")
         gpu_label.set_halign(Gtk.Align.START)
         gpu_label.add_css_class("caption")
+        add_hover_tooltip(gpu_label, LABEL_TOOLTIPS["batch_gpus"])
         self._gpu_box.append(gpu_label)
 
         # GPU checkboxes container

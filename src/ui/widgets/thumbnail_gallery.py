@@ -12,6 +12,7 @@ from gi.repository import Gtk, Gdk, GdkPixbuf, GLib
 from PIL import Image
 
 from src.utils.constants import THUMBNAIL_SIZE, THUMBNAIL_COLUMNS
+from src.ui.widgets.info_helper import SectionHeader, SECTION_INFO
 
 
 class SortOrder(Enum):
@@ -149,10 +150,8 @@ class ThumbnailGallery(Gtk.Box):
 
     def _build_ui(self):
         """Build the gallery UI."""
-        # Header
-        header = Gtk.Label(label="Gallery")
-        header.add_css_class("section-header")
-        header.set_halign(Gtk.Align.START)
+        # Header with info button
+        header = SectionHeader("Gallery", SECTION_INFO["gallery"])
         self.append(header)
 
         # Directory selector row: Label | Combo | Refresh

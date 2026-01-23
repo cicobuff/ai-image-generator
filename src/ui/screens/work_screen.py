@@ -26,6 +26,7 @@ from src.ui.widgets.batch_settings import BatchSettingsWidget
 from src.ui.widgets.toolbar import InpaintTool, OutpaintTool, CropTool
 from src.ui.widgets.image_display import MaskTool, OutpaintTool as ImageOutpaintTool
 from src.ui.widgets.lora_selector import LoRASelectorPanel
+from src.ui.widgets.info_helper import SectionHeader, add_hover_tooltip, SECTION_INFO, LABEL_TOOLTIPS
 from src.utils.metadata import load_metadata_from_image
 
 
@@ -146,10 +147,8 @@ class WorkScreen(Gtk.Box):
         separator.set_margin_bottom(6)
         box.append(separator)
 
-        # Model selectors section
-        model_header = Gtk.Label(label="Models")
-        model_header.add_css_class("section-header")
-        model_header.set_halign(Gtk.Align.START)
+        # Model selectors section with info button
+        model_header = SectionHeader("Models", SECTION_INFO["models"])
         box.append(model_header)
 
         # Checkpoint row: selector + optimize checkbox
@@ -167,13 +166,9 @@ class WorkScreen(Gtk.Box):
 
         # Optimize checkbox for torch.compile
         self._optimize_checkbox = Gtk.CheckButton(label="Optimize")
-        self._optimize_checkbox.set_tooltip_text(
-            "When enabled, uses torch.compile for faster generation. "
-            "First generation will take longer to compile, but subsequent generations will be much faster. "
-            "Compiled kernels are cached and reused across sessions."
-        )
         self._optimize_checkbox.add_css_class("caption")
         self._optimize_checkbox.set_active(False)  # Default to disabled
+        add_hover_tooltip(self._optimize_checkbox, LABEL_TOOLTIPS["optimize"])
         checkpoint_row.append(self._optimize_checkbox)
 
         # VAE selector

@@ -7,6 +7,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GObject
 
 from src.core.model_manager import model_manager, ModelInfo, ModelType
+from src.ui.widgets.info_helper import add_hover_tooltip, LABEL_TOOLTIPS
 
 
 class ModelSelector(Gtk.Box):
@@ -41,6 +42,12 @@ class ModelSelector(Gtk.Box):
         label.set_size_request(self._label_width, -1)
         if self._compact:
             label.add_css_class("caption")
+
+        # Add tooltip based on model type
+        tooltip_key = label_text.lower()
+        if tooltip_key in LABEL_TOOLTIPS:
+            add_hover_tooltip(label, LABEL_TOOLTIPS[tooltip_key])
+
         self.append(label)
 
         # Dropdown
