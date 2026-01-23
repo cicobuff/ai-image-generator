@@ -76,6 +76,7 @@ class WorkScreen(Gtk.Box):
             on_clear_crop_mask=self._on_clear_crop_mask,
             on_crop_image=self._on_crop_image,
             on_crop_size_changed=self._on_crop_size_changed,
+            on_remove_with_mask=self._on_remove_with_mask,
         )
         self.append(self._toolbar)
 
@@ -1439,6 +1440,41 @@ class WorkScreen(Gtk.Box):
 
         self._image_display.set_crop_size(width, height)
         self._status_bar.set_text(f"Crop mask set to {width}x{height}")
+
+    def _on_remove_with_mask(self):
+        """Handle Remove with Mask button click."""
+        if not self._image_display.has_crop_mask():
+            self._status_bar.set_text("Please draw a crop region first")
+            return
+
+        # Get the image with the masked area removed and filled
+        result = self._image_display.remove_with_mask()
+        if result is None:
+            self._status_bar.set_text("Remove with mask failed - no valid region")
+            return
+
+        # Clear the crop mask
+        self._image_display.clear_crop_mask()
+
+        # Display the modified image
+        self._image_display.set_image(result)
+
+        # Save the modified image
+        output_dir = self._thumbnail_gallery.get_output_directory()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"removed_{timestamp}.png"
+        filepath = output_dir / filename
+
+        try:
+            result.save(filepath)
+            self._thumbnail_gallery.add_image(filepath, result)
+            self._status_bar.set_text(f"Removed region: {filename}")
+        except Exception as e:
+            self._status_bar.set_text(f"Error saving image: {e}")
+
+        # Update toolbar has_image state
+        self._toolbar.set_has_image(True)
+        self._update_upscale_button_state()
 
     def _on_state_changed(self, state: GenerationState):
         """Handle generation state change."""

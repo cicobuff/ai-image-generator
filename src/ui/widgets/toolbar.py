@@ -54,6 +54,7 @@ class Toolbar(Gtk.Box):
         on_clear_crop_mask: Optional[Callable[[], None]] = None,
         on_crop_image: Optional[Callable[[], None]] = None,
         on_crop_size_changed: Optional[Callable[[int, int], None]] = None,
+        on_remove_with_mask: Optional[Callable[[], None]] = None,
     ):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self._on_load = on_load
@@ -75,6 +76,7 @@ class Toolbar(Gtk.Box):
         self._on_clear_crop_mask = on_clear_crop_mask
         self._on_crop_image = on_crop_image
         self._on_crop_size_changed = on_crop_size_changed
+        self._on_remove_with_mask = on_remove_with_mask
 
         self._inpaint_mode = False
         self._outpaint_mode = False
@@ -365,6 +367,20 @@ class Toolbar(Gtk.Box):
         self._crop_image_button.set_visible(False)
         self.append(self._crop_image_button)
 
+        # Remove with Mask button (visible in crop mode)
+        self._remove_with_mask_button = Gtk.Button()
+        remove_mask_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        remove_mask_icon = Gtk.Image.new_from_icon_name("edit-delete-symbolic")
+        remove_mask_label = Gtk.Label(label="Remove with Mask")
+        remove_mask_box.append(remove_mask_icon)
+        remove_mask_box.append(remove_mask_label)
+        self._remove_with_mask_button.set_child(remove_mask_box)
+        self._remove_with_mask_button.add_css_class("purple-button")
+        self._remove_with_mask_button.set_tooltip_text("Remove image under mask and fill with blended edge colors")
+        self._remove_with_mask_button.connect("clicked", self._on_remove_with_mask_clicked)
+        self._remove_with_mask_button.set_visible(False)
+        self.append(self._remove_with_mask_button)
+
         # Crop Size selector dropdown (visible in crop mode)
         self._crop_size_dropdown = Gtk.DropDown()
         size_labels = ["Select Size"] + list(SIZE_PRESETS.keys())
@@ -621,6 +637,11 @@ class Toolbar(Gtk.Box):
         if self._on_crop_image:
             self._on_crop_image()
 
+    def _on_remove_with_mask_clicked(self, button):
+        """Handle Remove with Mask button click."""
+        if self._on_remove_with_mask:
+            self._on_remove_with_mask()
+
     def _on_crop_size_selected(self, dropdown, param):
         """Handle crop size selection from dropdown."""
         selected = dropdown.get_selected()
@@ -649,6 +670,7 @@ class Toolbar(Gtk.Box):
         self._crop_mask_button.set_visible(visible)
         self._clear_crop_mask_button.set_visible(visible)
         self._crop_image_button.set_visible(visible)
+        self._remove_with_mask_button.set_visible(visible)
         self._crop_size_dropdown.set_visible(visible)
         # Disable normal generation buttons in crop mode (keep visible)
         self._generate_button.set_sensitive(not visible)
@@ -703,6 +725,7 @@ class Toolbar(Gtk.Box):
             self._crop_mask_button.set_sensitive(not self._has_crop_mask)
             self._clear_crop_mask_button.set_sensitive(True)
             self._crop_image_button.set_sensitive(True)
+            self._remove_with_mask_button.set_sensitive(True)
             # Restore state based on inpaint/outpaint/crop mode
             if self._inpaint_mode:
                 # Keep Generate/Img2Img visible but disabled in inpaint mode
@@ -761,6 +784,7 @@ class Toolbar(Gtk.Box):
             self._crop_mask_button.set_sensitive(False)
             self._clear_crop_mask_button.set_sensitive(False)
             self._crop_image_button.set_sensitive(False)
+            self._remove_with_mask_button.set_sensitive(False)
             self._cancel_button.set_visible(True)
             self._progress_bar.set_visible(True)
 

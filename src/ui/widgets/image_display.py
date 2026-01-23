@@ -9,7 +9,8 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, Gdk, GdkPixbuf, GLib
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
+import numpy as np
 
 
 class MaskTool(Enum):
@@ -1568,6 +1569,149 @@ class ImageDisplay(Gtk.DrawingArea):
 
         self.queue_draw()
 
+    def remove_with_mask(self) -> Optional[Image.Image]:
+        """Remove the image content under the crop mask and fill with blended edge colors.
+
+        Samples pixels from the edges of the mask boundary and creates a smooth
+        gradient fill to blend with the surrounding image.
+
+        Returns:
+            Modified PIL Image or None if no image or crop mask.
+        """
+        if self._pil_image is None or self._crop_rect is None:
+            return None
+
+        rx, ry, rw, rh = self._crop_rect
+        img_w, img_h = self._pil_image.size
+
+        # Calculate intersection of crop rect with image bounds
+        left = max(0, int(rx))
+        top = max(0, int(ry))
+        right = min(img_w, int(rx + rw))
+        bottom = min(img_h, int(ry + rh))
+
+        # Check if there's a valid intersection
+        if left >= right or top >= bottom:
+            return None
+
+        # Convert image to numpy array for fast processing
+        img_array = np.array(self._pil_image)
+
+        # Sample pixels from just outside each edge (if available)
+        edge_samples = []
+        sample_depth = 3  # How many pixels to sample from each edge
+
+        # Left edge samples
+        if left > 0:
+            for y in range(top, bottom):
+                for x in range(max(0, left - sample_depth), left):
+                    edge_samples.append(img_array[y, x])
+
+        # Right edge samples
+        if right < img_w:
+            for y in range(top, bottom):
+                for x in range(right, min(img_w, right + sample_depth)):
+                    edge_samples.append(img_array[y, x])
+
+        # Top edge samples
+        if top > 0:
+            for x in range(left, right):
+                for y in range(max(0, top - sample_depth), top):
+                    edge_samples.append(img_array[y, x])
+
+        # Bottom edge samples
+        if bottom < img_h:
+            for x in range(left, right):
+                for y in range(bottom, min(img_h, bottom + sample_depth)):
+                    edge_samples.append(img_array[y, x])
+
+        if not edge_samples:
+            # No edge samples available (mask covers entire image)
+            # Use a neutral gray
+            avg_color = np.array([128, 128, 128])
+        else:
+            # Calculate average color from edge samples
+            edge_samples = np.array(edge_samples)
+            avg_color = np.mean(edge_samples, axis=0).astype(np.uint8)
+
+        # Create a gradient fill that blends from edges toward center
+        mask_h = bottom - top
+        mask_w = right - left
+
+        # Create the fill region with gradient blending
+        fill_region = np.zeros((mask_h, mask_w, 3), dtype=np.uint8)
+
+        # Sample colors from each edge for gradient
+        left_colors = []
+        right_colors = []
+        top_colors = []
+        bottom_colors = []
+
+        # Get edge colors from the image boundary
+        if left > 0:
+            for y in range(top, bottom):
+                left_colors.append(img_array[y, left - 1])
+        if right < img_w:
+            for y in range(top, bottom):
+                right_colors.append(img_array[y, right])
+        if top > 0:
+            for x in range(left, right):
+                top_colors.append(img_array[top - 1, x])
+        if bottom < img_h:
+            for x in range(left, right):
+                bottom_colors.append(img_array[bottom, x])
+
+        # Create blended fill using weighted average from edges
+        for y in range(mask_h):
+            for x in range(mask_w):
+                # Calculate weights based on distance to each edge
+                weight_left = 1.0 / (x + 1) if left_colors else 0
+                weight_right = 1.0 / (mask_w - x) if right_colors else 0
+                weight_top = 1.0 / (y + 1) if top_colors else 0
+                weight_bottom = 1.0 / (mask_h - y) if bottom_colors else 0
+
+                total_weight = weight_left + weight_right + weight_top + weight_bottom
+
+                if total_weight > 0:
+                    color = np.zeros(3, dtype=np.float64)
+
+                    if left_colors and y < len(left_colors):
+                        color += weight_left * left_colors[y]
+                    if right_colors and y < len(right_colors):
+                        color += weight_right * right_colors[y]
+                    if top_colors and x < len(top_colors):
+                        color += weight_top * top_colors[x]
+                    if bottom_colors and x < len(bottom_colors):
+                        color += weight_bottom * bottom_colors[x]
+
+                    fill_region[y, x] = (color / total_weight).astype(np.uint8)
+                else:
+                    fill_region[y, x] = avg_color
+
+        # Apply the fill to the image
+        result_array = img_array.copy()
+        result_array[top:bottom, left:right] = fill_region
+
+        # Apply a slight blur to the filled region edges for smoother blending
+        result_image = Image.fromarray(result_array)
+
+        # Create a mask for feathered edge blending
+        feather_size = min(10, mask_w // 4, mask_h // 4)
+        if feather_size > 0:
+            # Create a binary mask
+            mask = Image.new('L', result_image.size, 255)
+            mask_draw = ImageDraw.Draw(mask)
+            # Draw black rectangle where we filled
+            mask_draw.rectangle([left, top, right - 1, bottom - 1], fill=0)
+
+            # Blur the mask for feathering
+            mask = mask.filter(ImageFilter.GaussianBlur(radius=feather_size))
+
+            # Composite original with filled using feathered mask
+            result_image = Image.composite(self._pil_image, result_image, mask)
+
+        return result_image
+
 
 class ImageDisplayFrame(Gtk.Frame):
     """Frame containing the image display with controls."""
@@ -1707,6 +1851,10 @@ class ImageDisplayFrame(Gtk.Frame):
     def set_crop_size(self, width: int, height: int):
         """Set the crop mask to a specific size."""
         self._display.set_crop_size(width, height)
+
+    def remove_with_mask(self) -> Optional[Image.Image]:
+        """Remove content under crop mask and fill with blended edge colors."""
+        return self._display.remove_with_mask()
 
     def reset_zoom(self):
         """Reset zoom to fit window."""
