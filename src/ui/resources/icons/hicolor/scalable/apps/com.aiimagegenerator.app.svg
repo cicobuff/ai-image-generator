@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="64" cy="64" r="60" fill="#2196F3"/>
+
+  <!-- Inner circle gradient effect -->
+  <circle cx="64" cy="64" r="52" fill="#1976D2"/>
+
+  <!-- Image frame -->
+  <rect x="28" y="32" width="72" height="56" rx="4" fill="#ffffff" opacity="0.95"/>
+
+  <!-- Mountain/landscape in frame -->
+  <polygon points="32,80 52,56 64,68 84,48 96,80" fill="#4CAF50"/>
+  <polygon points="32,80 48,62 60,72 96,80" fill="#66BB6A"/>
+
+  <!-- Sun -->
+  <circle cx="82" cy="46" r="8" fill="#FFD54F"/>
+
+  <!-- AI sparkle/magic effect - top right -->
+  <g fill="#ffffff">
+    <polygon points="100,24 102,30 108,32 102,34 100,40 98,34 92,32 98,30" opacity="0.9"/>
+    <polygon points="112,40 113,44 117,45 113,46 112,50 111,46 107,45 111,44" opacity="0.7"/>
+    <polygon points="20,52 21,55 24,56 21,57 20,60 19,57 16,56 19,55" opacity="0.7"/>
+  </g>
+
+  <!-- Paintbrush -->
+  <g transform="rotate(-45, 96, 96)">
+    <rect x="90" y="70" width="12" height="36" rx="2" fill="#8D6E63"/>
+    <rect x="88" y="60" width="16" height="14" rx="2" fill="#BDBDBD"/>
+    <rect x="90" y="54" width="12" height="8" fill="#FF7043"/>
+  </g>
+</svg>

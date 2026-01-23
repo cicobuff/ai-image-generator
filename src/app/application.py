@@ -23,6 +23,7 @@ class AIImageGeneratorApp(Gtk.Application):
         self._window = None
         self._setup_screen = None
         self._work_screen = None
+        self._app_icon_texture = None
 
     def do_startup(self):
         """Called when the application starts up."""
@@ -30,6 +31,9 @@ class AIImageGeneratorApp(Gtk.Application):
 
         # Load CSS
         self._load_css()
+
+        # Load app icon
+        self._load_app_icon()
 
         # Initialize GPU manager
         gpu_manager.initialize()
@@ -42,6 +46,9 @@ class AIImageGeneratorApp(Gtk.Application):
         if not self._window:
             self._window = Gtk.ApplicationWindow(application=self)
             self._window.set_title(APP_NAME)
+
+            # Set the application icon
+            self._window.set_icon_name(APP_ID)
 
             # Restore window size from config
             window_config = config_manager.config.window
@@ -180,6 +187,24 @@ class AIImageGeneratorApp(Gtk.Application):
                 css_provider,
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
             )
+
+    def _load_app_icon(self):
+        """Load and set the application icon."""
+        icons_path = Path(__file__).parent.parent / "ui" / "resources" / "icons"
+
+        if icons_path.exists():
+            try:
+                # Add our icons directory to the icon theme search path
+                icon_theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
+                icon_theme.add_search_path(str(icons_path))
+
+                # Also load the texture for direct use if needed
+                icon_file_path = icons_path / "hicolor" / "scalable" / "apps" / f"{APP_ID}.svg"
+                if icon_file_path.exists():
+                    icon_file = Gio.File.new_for_path(str(icon_file_path))
+                    self._app_icon_texture = Gdk.Texture.new_from_file(icon_file)
+            except Exception as e:
+                print(f"Error loading app icon: {e}")
 
     def _create_actions(self):
         """Create application actions."""

@@ -48,16 +48,25 @@ DEFAULT_CFG_SCALE = 7.0
 DEFAULT_SEED = -1  # -1 means random
 
 # Image size presets (width, height)
+# Ordered: Portrait (smallest to largest), Landscape (smallest to largest), Square (smallest to largest)
 SIZE_PRESETS = {
+    # Portrait (height > width)
+    "768x1024": (768, 1024),
+    "720x1280": (720, 1280),
+    "768x1344": (768, 1344),
+    "896x1152": (896, 1152),
+    "1024x1536": (1024, 1536),
+    # Landscape (width > height)
+    "1024x768": (1024, 768),
+    "1280x720": (1280, 720),
+    "1152x896": (1152, 896),
+    "1344x768": (1344, 768),
+    "1536x1024": (1536, 1024),
+    # Square
     "512x512": (512, 512),
     "768x768": (768, 768),
     "1024x1024": (1024, 1024),
-    "1024x768": (1024, 768),
-    "768x1024": (768, 1024),
-    "1280x720": (1280, 720),
-    "720x1280": (720, 1280),
-    "1536x1024": (1536, 1024),
-    "1024x1536": (1024, 1536),
+    "1536x1536": (1536, 1536),
 }
 
 # GPU memory settings (in GB)

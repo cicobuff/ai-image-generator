@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=AI Image Generator
+Comment=Generate AI images using Stable Diffusion
+Exec=python -m src.main
+Icon=com.aiimagegenerator.app
+Terminal=false
+Type=Application
+Categories=Graphics;2DGraphics;RasterGraphics;
+Keywords=AI;Image;Generator;Stable Diffusion;Art;
