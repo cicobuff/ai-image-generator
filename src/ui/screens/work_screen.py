@@ -23,8 +23,8 @@ from src.ui.widgets.thumbnail_gallery import ThumbnailGallery
 from src.ui.widgets.toolbar import Toolbar
 from src.ui.widgets.upscale_settings import UpscaleSettingsWidget
 from src.ui.widgets.batch_settings import BatchSettingsWidget
-from src.ui.widgets.toolbar import InpaintTool
-from src.ui.widgets.image_display import MaskTool
+from src.ui.widgets.toolbar import InpaintTool, OutpaintTool
+from src.ui.widgets.image_display import MaskTool, OutpaintTool as ImageOutpaintTool
 from src.ui.widgets.lora_selector import LoRASelectorPanel
 from src.utils.metadata import load_metadata_from_image
 
@@ -67,6 +67,10 @@ class WorkScreen(Gtk.Box):
             on_inpaint_tool_changed=self._on_inpaint_tool_changed,
             on_clear_masks=self._on_clear_masks,
             on_generate_inpaint=self._on_generate_inpaint,
+            on_outpaint_mode_changed=self._on_outpaint_mode_changed,
+            on_outpaint_tool_changed=self._on_outpaint_tool_changed,
+            on_clear_outpaint_masks=self._on_clear_outpaint_masks,
+            on_generate_outpaint=self._on_generate_outpaint,
         )
         self.append(self._toolbar)
 
@@ -1248,6 +1252,104 @@ class WorkScreen(Gtk.Box):
             loras=loras if loras else None,
         )
 
+    def _on_outpaint_mode_changed(self, enabled: bool):
+        """Handle Outpaint Mode toggle."""
+        self._image_display.set_outpaint_mode(enabled)
+        if enabled:
+            self._center_paned.add_css_class("center-panel-outpaint-mode")
+            # Disable batch during outpaint mode
+            self._batch_widget.set_sensitive_all(False)
+            # Set edge zone size from config
+            from src.core.config import config_manager
+            edge_zone = config_manager.config.outpaint.edge_zone_size
+            self._image_display.set_edge_zone_size(edge_zone)
+            self._status_bar.set_text("Outpaint mode enabled - click Edge Mask to draw extensions")
+        else:
+            self._center_paned.remove_css_class("center-panel-outpaint-mode")
+            # Re-enable batch when exiting outpaint mode
+            self._batch_widget.set_sensitive_all(True)
+            self._status_bar.set_text("Outpaint mode disabled")
+
+    def _on_outpaint_tool_changed(self, tool):
+        """Handle outpaint tool change."""
+        if tool == OutpaintTool.EDGE:
+            self._image_display.set_outpaint_tool(ImageOutpaintTool.EDGE)
+            self._status_bar.set_text("Edge Mask: Click near an edge and drag outward to extend")
+        else:
+            self._image_display.set_outpaint_tool(OutpaintTool.NONE)
+            self._status_bar.set_text("Select Edge Mask tool to draw extensions")
+
+    def _on_clear_outpaint_masks(self):
+        """Handle Clear Outpaint Masks button click."""
+        self._image_display.clear_outpaint_masks()
+        self._status_bar.set_text("Outpaint masks cleared")
+
+    def _on_generate_outpaint(self):
+        """Handle Generate Outpaint button click."""
+        # Check if a checkpoint is selected
+        if not model_manager.loaded.checkpoint:
+            self._status_bar.set_text("Please select a checkpoint first")
+            return
+
+        # Check if there are any outpaint extensions
+        if not self._image_display.has_outpaint_extensions():
+            self._status_bar.set_text("Please draw outpaint extensions first")
+            return
+
+        # Check if there's an image to outpaint (use current displayed image)
+        if self._image_display.get_pil_image() is None:
+            self._status_bar.set_text("No image to outpaint")
+            return
+
+        positive = self._prompt_panel.get_positive_prompt()
+        if not positive.strip():
+            self._status_bar.set_text("Please enter a positive prompt")
+            return
+
+        # Ensure model is loaded and optimized if needed
+        if not self._ensure_model_ready("outpaint"):
+            return
+
+        self._do_generate_outpaint()
+
+    def _do_generate_outpaint(self):
+        """Perform the actual outpaint generation (called after models are loaded)."""
+        # For outpaint, always use the current displayed image (not the stored original)
+        # This allows chaining multiple outpaints on the progressively larger image
+        current_image = self._image_display.get_pil_image()
+
+        extensions = self._image_display.get_outpaint_extensions()
+        positive = self._prompt_panel.get_positive_prompt()
+        negative = self._prompt_panel.get_negative_prompt()
+        params = self._params_widget.get_params(positive, negative)
+        strength = self._params_widget.get_strength()
+
+        # Store whether user wanted random seed
+        self._last_seed_was_random = (params.seed == -1)
+
+        # Get upscale settings
+        upscale_enabled = self._upscale_widget.is_enabled
+        upscale_model_path = self._upscale_widget.selected_model_path
+        upscale_model_name = self._upscale_widget.selected_model_name
+
+        # Get output directory from gallery
+        output_dir = self._thumbnail_gallery.get_output_directory()
+
+        # Get active LoRAs
+        loras = self._get_active_loras()
+
+        generation_service.generate_outpaint(
+            params,
+            input_image=current_image,
+            extensions=extensions,
+            strength=strength,
+            upscale_enabled=upscale_enabled,
+            upscale_model_path=upscale_model_path,
+            upscale_model_name=upscale_model_name,
+            output_dir=output_dir,
+            loras=loras if loras else None,
+        )
+
     def _on_state_changed(self, state: GenerationState):
         """Handle generation state change."""
         self._toolbar.set_state(state)
@@ -1267,6 +1369,8 @@ class WorkScreen(Gtk.Box):
                         self._do_img2img()
                     elif pending == "inpaint":
                         self._do_generate_inpaint()
+                    elif pending == "outpaint":
+                        self._do_generate_outpaint()
                 else:
                     self._status_bar.set_text("Model loading failed - generation cancelled")
 
@@ -1287,6 +1391,12 @@ class WorkScreen(Gtk.Box):
             # In inpaint mode, we want to keep the mask and show the result
             # The user can continue to refine with the same mask
             in_inpaint_mode = self._image_display.inpaint_mode
+            in_outpaint_mode = self._image_display.outpaint_mode
+
+            # For outpaint mode, clear masks before setting new image
+            # since the new image has different dimensions
+            if in_outpaint_mode:
+                self._image_display.clear_outpaint_masks()
 
             # Display the generated image
             self._image_display.set_image(result.image)
@@ -1302,7 +1412,7 @@ class WorkScreen(Gtk.Box):
 
             # Show the actual seed used in status bar
             seed_info = f" (seed: {result.seed})" if result.seed != -1 else ""
-            mode_info = " (inpaint)" if in_inpaint_mode else ""
+            mode_info = " (inpaint)" if in_inpaint_mode else (" (outpaint)" if in_outpaint_mode else "")
             self._status_bar.set_text(f"Generated: {result.path.name if result.path else 'image'}{seed_info}{mode_info}")
 
             # Update toolbar has_image state

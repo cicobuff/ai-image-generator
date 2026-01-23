@@ -208,6 +208,77 @@ window {
     color: alpha(white, 0.6);
 }
 
+/* Outpaint mode toggle button */
+.outpaint-toggle {
+    background: #F8BBD9;
+    color: #880E4F;
+    border: none;
+}
+
+.outpaint-toggle:hover {
+    background: #F48FB1;
+}
+
+.outpaint-toggle:checked {
+    background: #EC407A;
+    color: white;
+}
+
+.outpaint-toggle:checked:hover {
+    background: #F06292;
+}
+
+/* Pink toggle button style (Edge Mask) */
+.pink-toggle {
+    background: #EC407A;
+    color: white;
+    border: none;
+}
+
+.pink-toggle:hover {
+    background: #F06292;
+}
+
+.pink-toggle:checked {
+    background: #AD1457;
+    color: white;
+}
+
+.pink-toggle:checked:hover {
+    background: #C2185B;
+}
+
+.pink-toggle:disabled {
+    background: alpha(#EC407A, 0.4);
+    color: alpha(white, 0.6);
+}
+
+/* Pink button style (Outpaint actions) */
+.pink-button {
+    background: #EC407A;
+    color: white;
+    border: none;
+}
+
+.pink-button:hover {
+    background: #F06292;
+}
+
+.pink-button:active {
+    background: #AD1457;
+}
+
+.pink-button:disabled {
+    background: alpha(#EC407A, 0.4);
+    color: alpha(white, 0.6);
+}
+
+/* Center panel in outpaint mode - inner pink border */
+.center-panel-outpaint-mode {
+    box-shadow: inset 0 0 0 3px #EC407A;
+    border-radius: 4px;
+}
+
 /* Model selector */
 .model-selector {
     margin-bottom: 4px;

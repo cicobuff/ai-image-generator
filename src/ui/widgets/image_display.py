@@ -19,26 +19,57 @@ class MaskTool(Enum):
     PAINT = "paint"
 
 
+class OutpaintTool(Enum):
+    """Outpaint mask drawing tools."""
+    NONE = "none"
+    EDGE = "edge"
+
+
+class OutpaintDirection(Enum):
+    """Direction for outpaint extension."""
+    NONE = "none"
+    LEFT = "left"
+    RIGHT = "right"
+    TOP = "top"
+    BOTTOM = "bottom"
+
+
 class ImageDisplay(Gtk.DrawingArea):
     """Widget for displaying generated images using Cairo with mask overlay support."""
 
     PAINT_RADIUS = 25  # Brush radius for paint tool
     MASK_COLOR = (144, 238, 144, 128)  # Light green with 50% transparency
+    OUTPAINT_MASK_COLOR = (236, 64, 122, 128)  # Pink with 50% transparency
     ZOOM_STEP = 1.2  # Zoom factor per scroll step
     MIN_ZOOM = 0.1  # Minimum zoom (10%)
     MAX_ZOOM = 20.0  # Maximum zoom (2000%)
+    DEFAULT_EDGE_ZONE = 200  # Default edge zone size in pixels
 
-    def __init__(self):
+    def __init__(self, edge_zone_size: int = DEFAULT_EDGE_ZONE):
         super().__init__()
         self._pixbuf: Optional[GdkPixbuf.Pixbuf] = None
         self._pil_image: Optional[Image.Image] = None
         self._original_image: Optional[Image.Image] = None  # Store original for inpaint
 
-        # Mask-related state
+        # Mask-related state (inpaint)
         self._mask_image: Optional[Image.Image] = None  # RGBA mask
         self._mask_pixbuf: Optional[GdkPixbuf.Pixbuf] = None
         self._inpaint_mode: bool = False
         self._current_tool: MaskTool = MaskTool.NONE
+
+        # Outpaint-related state
+        self._outpaint_mode: bool = False
+        self._outpaint_tool: OutpaintTool = OutpaintTool.NONE
+        self._edge_zone_size: int = edge_zone_size
+        # Store extension amounts for each edge (in pixels)
+        self._outpaint_extensions: dict = {
+            OutpaintDirection.LEFT: 0,
+            OutpaintDirection.RIGHT: 0,
+            OutpaintDirection.TOP: 0,
+            OutpaintDirection.BOTTOM: 0,
+        }
+        self._current_outpaint_direction: OutpaintDirection = OutpaintDirection.NONE
+        self._outpaint_draw_start: float = 0  # Starting position for outpaint drag
 
         # Drawing state
         self._is_drawing: bool = False
@@ -131,6 +162,61 @@ class ImageDisplay(Gtk.DrawingArea):
 
         return (int(img_x), int(img_y))
 
+    def _widget_to_image_coords_unclamped(self, widget_x: float, widget_y: float) -> tuple:
+        """Convert widget coordinates to image coordinates without clamping."""
+        if self._pixbuf is None or self._scale == 0:
+            return (-1, -1)
+
+        img_x = (widget_x - self._img_x) / self._scale + self._pan_x
+        img_y = (widget_y - self._img_y) / self._scale + self._pan_y
+
+        return (img_x, img_y)
+
+    def _get_outpaint_direction(self, widget_x: float, widget_y: float) -> OutpaintDirection:
+        """Determine which edge zone the cursor is in for outpainting.
+
+        Returns OutpaintDirection.NONE if not in a valid edge zone.
+        Corners are ignored (return NONE).
+        """
+        if self._pixbuf is None:
+            return OutpaintDirection.NONE
+
+        img_x, img_y = self._widget_to_image_coords_unclamped(widget_x, widget_y)
+        img_width = self._pixbuf.get_width()
+        img_height = self._pixbuf.get_height()
+
+        # Check if within image bounds (for edge detection)
+        in_image_x = 0 <= img_x < img_width
+        in_image_y = 0 <= img_y < img_height
+
+        if not in_image_x or not in_image_y:
+            return OutpaintDirection.NONE
+
+        edge_zone = self._edge_zone_size
+
+        # Check corners first - they are ignored
+        in_left_zone = img_x < edge_zone
+        in_right_zone = img_x >= img_width - edge_zone
+        in_top_zone = img_y < edge_zone
+        in_bottom_zone = img_y >= img_height - edge_zone
+
+        # Corner check: if in two edge zones at once, ignore
+        edge_count = sum([in_left_zone, in_right_zone, in_top_zone, in_bottom_zone])
+        if edge_count >= 2:
+            return OutpaintDirection.NONE
+
+        # Determine direction
+        if in_left_zone:
+            return OutpaintDirection.LEFT
+        elif in_right_zone:
+            return OutpaintDirection.RIGHT
+        elif in_top_zone:
+            return OutpaintDirection.TOP
+        elif in_bottom_zone:
+            return OutpaintDirection.BOTTOM
+
+        return OutpaintDirection.NONE
+
     def _on_motion(self, controller, x, y):
         """Handle mouse motion for cursor updates and panning."""
         # Handle panning with middle mouse button
@@ -155,16 +241,31 @@ class ImageDisplay(Gtk.DrawingArea):
         self._current_x = x
         self._current_y = y
 
-        # Update cursor based on tool
+        # Update cursor based on mode and tool
         if self._is_panning:
             self.set_cursor(Gdk.Cursor.new_from_name("grabbing", None))
+        elif self._outpaint_mode and self._outpaint_tool == OutpaintTool.EDGE:
+            # Determine which edge zone we're in and set appropriate cursor
+            direction = self._get_outpaint_direction(x, y)
+            if direction == OutpaintDirection.LEFT:
+                self.set_cursor(Gdk.Cursor.new_from_name("w-resize", None))
+            elif direction == OutpaintDirection.RIGHT:
+                self.set_cursor(Gdk.Cursor.new_from_name("e-resize", None))
+            elif direction == OutpaintDirection.TOP:
+                self.set_cursor(Gdk.Cursor.new_from_name("n-resize", None))
+            elif direction == OutpaintDirection.BOTTOM:
+                self.set_cursor(Gdk.Cursor.new_from_name("s-resize", None))
+            else:
+                self.set_cursor(Gdk.Cursor.new_from_name("not-allowed", None))
         elif self._inpaint_mode and self._current_tool != MaskTool.NONE:
             self.set_cursor(Gdk.Cursor.new_from_name("crosshair", None))
         else:
             self.set_cursor(None)
 
-        # Redraw for live preview of paint cursor
+        # Redraw for live preview of paint cursor or outpaint zones
         if self._inpaint_mode and self._current_tool == MaskTool.PAINT:
+            self.queue_draw()
+        elif self._outpaint_mode and self._outpaint_tool == OutpaintTool.EDGE:
             self.queue_draw()
 
     def _on_enter(self, controller, x, y):
@@ -339,6 +440,29 @@ class ImageDisplay(Gtk.DrawingArea):
         # Grab focus for keyboard events
         self.grab_focus()
 
+        # Handle outpaint mode
+        if self._outpaint_mode and self._outpaint_tool == OutpaintTool.EDGE:
+            if self._pixbuf is None:
+                return
+
+            direction = self._get_outpaint_direction(x, y)
+            if direction == OutpaintDirection.NONE:
+                return  # Not in a valid edge zone
+
+            self._is_drawing = True
+            self._current_outpaint_direction = direction
+            self._draw_start_x = x
+            self._draw_start_y = y
+
+            # Store the starting image coordinate based on direction
+            img_x, img_y = self._widget_to_image_coords(x, y)
+            if direction in (OutpaintDirection.LEFT, OutpaintDirection.RIGHT):
+                self._outpaint_draw_start = img_x
+            else:
+                self._outpaint_draw_start = img_y
+            return
+
+        # Handle inpaint mode
         if not self._inpaint_mode or self._current_tool == MaskTool.NONE:
             return
 
@@ -372,6 +496,28 @@ class ImageDisplay(Gtk.DrawingArea):
 
     def _on_drag_begin(self, gesture, start_x, start_y):
         """Handle drag start."""
+        # Handle outpaint mode
+        if self._outpaint_mode and self._outpaint_tool == OutpaintTool.EDGE:
+            if self._pixbuf is None:
+                return
+
+            direction = self._get_outpaint_direction(start_x, start_y)
+            if direction == OutpaintDirection.NONE:
+                return
+
+            self._is_drawing = True
+            self._current_outpaint_direction = direction
+            self._draw_start_x = start_x
+            self._draw_start_y = start_y
+
+            img_x, img_y = self._widget_to_image_coords(start_x, start_y)
+            if direction in (OutpaintDirection.LEFT, OutpaintDirection.RIGHT):
+                self._outpaint_draw_start = img_x
+            else:
+                self._outpaint_draw_start = img_y
+            return
+
+        # Handle inpaint mode
         if not self._inpaint_mode or self._current_tool == MaskTool.NONE:
             return
 
@@ -389,6 +535,37 @@ class ImageDisplay(Gtk.DrawingArea):
         current_x = self._draw_start_x + offset_x
         current_y = self._draw_start_y + offset_y
 
+        # Handle outpaint mode
+        if self._outpaint_mode and self._current_outpaint_direction != OutpaintDirection.NONE:
+            img_x, img_y = self._widget_to_image_coords_unclamped(current_x, current_y)
+            img_width = self._pixbuf.get_width()
+            img_height = self._pixbuf.get_height()
+
+            # Calculate extension based on drag direction
+            direction = self._current_outpaint_direction
+            if direction == OutpaintDirection.LEFT:
+                # Drag left (negative x direction) creates extension
+                extension = max(0, int(self._outpaint_draw_start - img_x))
+            elif direction == OutpaintDirection.RIGHT:
+                # Drag right (positive x direction) creates extension
+                extension = max(0, int(img_x - self._outpaint_draw_start))
+            elif direction == OutpaintDirection.TOP:
+                # Drag up (negative y direction) creates extension
+                extension = max(0, int(self._outpaint_draw_start - img_y))
+            elif direction == OutpaintDirection.BOTTOM:
+                # Drag down (positive y direction) creates extension
+                extension = max(0, int(img_y - self._outpaint_draw_start))
+            else:
+                extension = 0
+
+            # Update extension (live preview)
+            self._outpaint_extensions[direction] = extension
+            self._current_x = current_x
+            self._current_y = current_y
+            self.queue_draw()
+            return
+
+        # Handle inpaint mode
         if self._current_tool == MaskTool.PAINT:
             img_x, img_y = self._widget_to_image_coords(current_x, current_y)
             self._paint_at(img_x, img_y)
@@ -405,6 +582,14 @@ class ImageDisplay(Gtk.DrawingArea):
 
         self._is_drawing = False
 
+        # Handle outpaint mode - extension is already set during drag
+        if self._outpaint_mode and self._current_outpaint_direction != OutpaintDirection.NONE:
+            # Extension is finalized, reset drawing state
+            self._current_outpaint_direction = OutpaintDirection.NONE
+            self.queue_draw()
+            return
+
+        # Handle inpaint mode
         if self._current_tool == MaskTool.RECT:
             end_x = self._draw_start_x + offset_x
             end_y = self._draw_start_y + offset_y
@@ -523,12 +708,20 @@ class ImageDisplay(Gtk.DrawingArea):
         Gdk.cairo_set_source_pixbuf(cr, self._pixbuf, 0, 0)
         cr.paint()
 
-        # Draw the mask overlay
+        # Draw the inpaint mask overlay
         if self._mask_pixbuf is not None and self._inpaint_mode:
             Gdk.cairo_set_source_pixbuf(cr, self._mask_pixbuf, 0, 0)
             cr.paint()
 
         cr.restore()
+
+        # Draw outpaint extension overlays
+        if self._outpaint_mode:
+            self._draw_outpaint_overlays(cr, width, height)
+
+        # Draw outpaint edge zone indicators when in outpaint mode
+        if self._outpaint_mode and self._outpaint_tool == OutpaintTool.EDGE and not self._is_drawing:
+            self._draw_outpaint_edge_zones(cr, width, height)
 
         # Draw zoom indicator
         if self._zoom_level != 1.0:
@@ -590,6 +783,121 @@ class ImageDisplay(Gtk.DrawingArea):
         cr.set_line_width(2)
         cr.arc(self._current_x, self._current_y, scaled_radius, 0, 2 * 3.14159)
         cr.stroke()
+
+    def _draw_outpaint_overlays(self, cr, width, height):
+        """Draw outpaint extension overlays showing where the image will be extended."""
+        if self._pixbuf is None:
+            return
+
+        img_width = self._pixbuf.get_width()
+        img_height = self._pixbuf.get_height()
+
+        # Pink color for outpaint (r, g, b, a normalized)
+        pink = (236/255, 64/255, 122/255)
+
+        for direction, extension in self._outpaint_extensions.items():
+            if extension <= 0:
+                continue
+
+            # Calculate screen coordinates for the extension area
+            if direction == OutpaintDirection.LEFT:
+                # Extension to the left of the image
+                screen_x = self._img_x - extension * self._scale - self._pan_x * self._scale
+                screen_y = self._img_y - self._pan_y * self._scale
+                screen_w = extension * self._scale
+                screen_h = img_height * self._scale
+            elif direction == OutpaintDirection.RIGHT:
+                # Extension to the right of the image
+                screen_x = self._img_x + (img_width - self._pan_x) * self._scale
+                screen_y = self._img_y - self._pan_y * self._scale
+                screen_w = extension * self._scale
+                screen_h = img_height * self._scale
+            elif direction == OutpaintDirection.TOP:
+                # Extension above the image
+                screen_x = self._img_x - self._pan_x * self._scale
+                screen_y = self._img_y - extension * self._scale - self._pan_y * self._scale
+                screen_w = img_width * self._scale
+                screen_h = extension * self._scale
+            elif direction == OutpaintDirection.BOTTOM:
+                # Extension below the image
+                screen_x = self._img_x - self._pan_x * self._scale
+                screen_y = self._img_y + (img_height - self._pan_y) * self._scale
+                screen_w = img_width * self._scale
+                screen_h = extension * self._scale
+            else:
+                continue
+
+            # Draw semi-transparent pink fill
+            cr.set_source_rgba(pink[0], pink[1], pink[2], 0.4)
+            cr.rectangle(screen_x, screen_y, screen_w, screen_h)
+            cr.fill()
+
+            # Draw dashed outline
+            cr.set_source_rgba(pink[0], pink[1], pink[2], 0.9)
+            cr.set_line_width(2)
+            cr.set_dash([5, 5])
+            cr.rectangle(screen_x, screen_y, screen_w, screen_h)
+            cr.stroke()
+            cr.set_dash([])  # Reset dash
+
+            # Draw extension amount label
+            label = f"{extension}px"
+            cr.set_source_rgba(1, 1, 1, 0.9)
+            cr.select_font_face("Sans", 0, 0)
+            cr.set_font_size(12)
+            extents = cr.text_extents(label)
+
+            label_x = screen_x + screen_w / 2 - extents.width / 2
+            label_y = screen_y + screen_h / 2 + extents.height / 2
+
+            # Draw text background
+            cr.set_source_rgba(0, 0, 0, 0.6)
+            cr.rectangle(label_x - 4, label_y - extents.height - 2, extents.width + 8, extents.height + 4)
+            cr.fill()
+
+            # Draw text
+            cr.set_source_rgba(1, 1, 1, 0.9)
+            cr.move_to(label_x, label_y)
+            cr.show_text(label)
+
+    def _draw_outpaint_edge_zones(self, cr, width, height):
+        """Draw indicators for the active edge zones where outpaint can be started."""
+        if self._pixbuf is None:
+            return
+
+        img_width = self._pixbuf.get_width()
+        img_height = self._pixbuf.get_height()
+        edge_zone = self._edge_zone_size
+
+        # Get current cursor position to highlight the active zone
+        current_direction = self._get_outpaint_direction(self._current_x, self._current_y)
+
+        # Pink color
+        pink = (236/255, 64/255, 122/255)
+
+        # Draw subtle edge zone indicators
+        zones = [
+            (OutpaintDirection.LEFT, 0, 0, edge_zone, img_height),
+            (OutpaintDirection.RIGHT, img_width - edge_zone, 0, edge_zone, img_height),
+            (OutpaintDirection.TOP, 0, 0, img_width, edge_zone),
+            (OutpaintDirection.BOTTOM, 0, img_height - edge_zone, img_width, edge_zone),
+        ]
+
+        for direction, x, y, w, h in zones:
+            # Convert to screen coordinates
+            screen_x = self._img_x + (x - self._pan_x) * self._scale
+            screen_y = self._img_y + (y - self._pan_y) * self._scale
+            screen_w = w * self._scale
+            screen_h = h * self._scale
+
+            # Highlight the zone under the cursor more prominently
+            if direction == current_direction:
+                cr.set_source_rgba(pink[0], pink[1], pink[2], 0.25)
+            else:
+                cr.set_source_rgba(pink[0], pink[1], pink[2], 0.08)
+
+            cr.rectangle(screen_x, screen_y, screen_w, screen_h)
+            cr.fill()
 
     def set_image(self, image: Image.Image):
         """Set the image to display from a PIL Image."""
@@ -739,6 +1047,66 @@ class ImageDisplay(Gtk.DrawingArea):
         """Check if inpaint mode is active."""
         return self._inpaint_mode
 
+    # Outpaint mode methods
+    def set_outpaint_mode(self, enabled: bool):
+        """Enable or disable outpaint mode."""
+        self._outpaint_mode = enabled
+        if enabled:
+            # Store original image when entering outpaint mode
+            if self._pil_image is not None:
+                self._original_image = self._pil_image.copy()
+        else:
+            # Clear outpaint extensions when exiting
+            self._clear_outpaint_extensions()
+            self._original_image = None
+            self._outpaint_tool = OutpaintTool.NONE
+        self.queue_draw()
+
+    def set_outpaint_tool(self, tool: OutpaintTool):
+        """Set the current outpaint drawing tool."""
+        self._outpaint_tool = tool
+        self.queue_draw()
+
+    def _clear_outpaint_extensions(self):
+        """Clear all outpaint extensions."""
+        self._outpaint_extensions = {
+            OutpaintDirection.LEFT: 0,
+            OutpaintDirection.RIGHT: 0,
+            OutpaintDirection.TOP: 0,
+            OutpaintDirection.BOTTOM: 0,
+        }
+
+    def clear_outpaint_masks(self):
+        """Clear all outpaint extension masks."""
+        self._clear_outpaint_extensions()
+        self.queue_draw()
+
+    def get_outpaint_extensions(self) -> dict:
+        """Get the current outpaint extension amounts.
+
+        Returns:
+            Dict with keys 'left', 'right', 'top', 'bottom' containing extension pixels.
+        """
+        return {
+            'left': self._outpaint_extensions[OutpaintDirection.LEFT],
+            'right': self._outpaint_extensions[OutpaintDirection.RIGHT],
+            'top': self._outpaint_extensions[OutpaintDirection.TOP],
+            'bottom': self._outpaint_extensions[OutpaintDirection.BOTTOM],
+        }
+
+    def has_outpaint_extensions(self) -> bool:
+        """Check if any outpaint extensions have been defined."""
+        return any(ext > 0 for ext in self._outpaint_extensions.values())
+
+    @property
+    def outpaint_mode(self) -> bool:
+        """Check if outpaint mode is active."""
+        return self._outpaint_mode
+
+    def set_edge_zone_size(self, size: int):
+        """Set the edge zone size for outpaint detection."""
+        self._edge_zone_size = max(50, min(size, 500))  # Clamp between 50-500
+
 
 class ImageDisplayFrame(Gtk.Frame):
     """Frame containing the image display with controls."""
@@ -810,6 +1178,36 @@ class ImageDisplayFrame(Gtk.Frame):
     def inpaint_mode(self) -> bool:
         """Check if inpaint mode is active."""
         return self._display.inpaint_mode
+
+    # Outpaint mode methods (delegate to display)
+    def set_outpaint_mode(self, enabled: bool):
+        """Enable or disable outpaint mode."""
+        self._display.set_outpaint_mode(enabled)
+
+    def set_outpaint_tool(self, tool: OutpaintTool):
+        """Set the current outpaint drawing tool."""
+        self._display.set_outpaint_tool(tool)
+
+    def clear_outpaint_masks(self):
+        """Clear all outpaint extension masks."""
+        self._display.clear_outpaint_masks()
+
+    def get_outpaint_extensions(self) -> dict:
+        """Get the current outpaint extension amounts."""
+        return self._display.get_outpaint_extensions()
+
+    def has_outpaint_extensions(self) -> bool:
+        """Check if any outpaint extensions have been defined."""
+        return self._display.has_outpaint_extensions()
+
+    @property
+    def outpaint_mode(self) -> bool:
+        """Check if outpaint mode is active."""
+        return self._display.outpaint_mode
+
+    def set_edge_zone_size(self, size: int):
+        """Set the edge zone size for outpaint detection."""
+        self._display.set_edge_zone_size(size)
 
     def reset_zoom(self):
         """Reset zoom to fit window."""

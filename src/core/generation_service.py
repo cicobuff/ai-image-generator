@@ -654,6 +654,171 @@ class GenerationService:
         self._current_thread = threading.Thread(target=generate_thread, daemon=True)
         self._current_thread.start()
 
+    def generate_outpaint(
+        self,
+        params: GenerationParams,
+        input_image: Image.Image,
+        extensions: dict,
+        strength: float = 1.0,
+        upscale_enabled: bool = False,
+        upscale_model_path: Optional[str] = None,
+        upscale_model_name: str = "",
+        output_dir: Optional[Path] = None,
+        loras: Optional[list[LoRAInfo]] = None,
+    ) -> None:
+        """Start outpaint generation in background thread.
+
+        Args:
+            params: Generation parameters
+            input_image: Input image to outpaint
+            extensions: Dict with 'left', 'right', 'top', 'bottom' extension amounts in pixels
+            strength: How much to transform extended areas (0=no change, 1=full generation)
+            upscale_enabled: Whether to upscale the result
+            upscale_model_path: Path to the upscale model
+            upscale_model_name: Name of the upscale model (for metadata)
+            output_dir: Optional output directory for saving images
+            loras: Optional list of LoRAs to apply
+        """
+        if self.is_busy:
+            return
+
+        if not self.is_model_loaded:
+            self._notify_generation_complete(
+                GenerationResult(success=False, error="No model loaded")
+            )
+            return
+
+        if input_image is None:
+            self._notify_generation_complete(
+                GenerationResult(success=False, error="No input image provided")
+            )
+            return
+
+        # Check that at least one extension is specified
+        total_extension = sum(extensions.values())
+        if total_extension == 0:
+            self._notify_generation_complete(
+                GenerationResult(success=False, error="No outpaint extensions specified")
+            )
+            return
+
+        self._cancel_requested = False
+        self._set_state(GenerationState.GENERATING)
+
+        def generate_thread():
+            try:
+                print(f"Outpaint generation thread started")
+                print(f"Extensions: {extensions}")
+
+                # Load LoRAs if specified
+                if loras:
+                    self._notify_progress("Loading LoRAs...", 0.0)
+                    if not diffusers_backend.load_loras(loras, self._notify_progress):
+                        print("Warning: Failed to load some LoRAs")
+                else:
+                    # Unload any previously loaded LoRAs
+                    diffusers_backend.unload_loras()
+
+                # Get actual seed
+                actual_seed = diffusers_backend.get_actual_seed(params)
+                if params.seed == -1:
+                    params.seed = actual_seed
+
+                print(f"Using seed: {params.seed}")
+                self._notify_progress("Preparing outpaint...", 0.0)
+
+                # Calculate effective steps
+                effective_steps = max(1, int(params.steps * strength))
+                self._notify_step_progress(0, effective_steps)
+
+                # Generate image using outpaint method
+                print(f"Calling diffusers_backend.generate_outpaint()")
+                image = diffusers_backend.generate_outpaint(
+                    params,
+                    input_image=input_image,
+                    extensions=extensions,
+                    strength=strength,
+                    progress_callback=self._notify_step_progress,
+                )
+                print(f"diffusers_backend.generate_outpaint() returned: {image is not None}")
+
+                self._notify_progress("Finalizing image...", 0.95)
+
+                if self._cancel_requested:
+                    self._notify_generation_complete(
+                        GenerationResult(success=False, error="Generation cancelled")
+                    )
+                    return
+
+                if image is None:
+                    self._notify_generation_complete(
+                        GenerationResult(success=False, error="Outpaint generation failed")
+                    )
+                    return
+
+                # Store original size before potential upscaling
+                original_width = image.width
+                original_height = image.height
+                upscale_factor = 1
+
+                # Upscale if enabled
+                if upscale_enabled and upscale_model_path:
+                    self._notify_progress("Loading upscale model...", 0.0)
+
+                    if not upscale_backend.is_loaded or upscale_backend._loaded_model_path != upscale_model_path:
+                        upscale_backend.set_device(diffusers_backend._device)
+                        if not upscale_backend.load_model(upscale_model_path, self._notify_progress):
+                            print("Failed to load upscale model, skipping upscaling")
+                        else:
+                            upscale_factor = upscale_backend.scale
+
+                    if upscale_backend.is_loaded:
+                        self._notify_progress("Upscaling image...", 0.5)
+                        upscaled = upscale_backend.upscale(image, self._notify_progress)
+                        if upscaled:
+                            image = upscaled
+                            upscale_factor = upscale_backend.scale
+                            print(f"Upscaled from {original_width}x{original_height} to {image.width}x{image.height}")
+                        else:
+                            print("Upscaling failed, using original image")
+
+                # Save image with metadata
+                self._notify_progress("Saving image...", 0.98)
+                output_path = self._save_image(
+                    image,
+                    params,
+                    upscale_enabled=upscale_enabled and upscale_backend.is_loaded,
+                    upscale_model_name=upscale_model_name,
+                    upscale_factor=upscale_factor,
+                    original_width=original_width,
+                    original_height=original_height,
+                    is_outpaint=True,
+                    outpaint_extensions=extensions,
+                    output_dir=output_dir,
+                )
+
+                self._notify_progress("Complete", 1.0)
+                self._notify_generation_complete(
+                    GenerationResult(
+                        success=True,
+                        image=image,
+                        path=output_path,
+                        seed=params.seed,
+                    )
+                )
+
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._notify_generation_complete(
+                    GenerationResult(success=False, error=str(e))
+                )
+            finally:
+                self._set_state(GenerationState.IDLE)
+
+        self._current_thread = threading.Thread(target=generate_thread, daemon=True)
+        self._current_thread.start()
+
     def cancel(self) -> None:
         """Request cancellation of current operation."""
         if self._state == GenerationState.GENERATING:
@@ -673,6 +838,8 @@ class GenerationService:
         img2img_strength: float = 0.0,
         is_inpaint: bool = False,
         inpaint_strength: float = 0.0,
+        is_outpaint: bool = False,
+        outpaint_extensions: Optional[dict] = None,
         output_dir: Optional[Path] = None,
     ) -> Path:
         """Save generated image to output directory with metadata."""
@@ -682,7 +849,9 @@ class GenerationService:
 
         # Generate filename with timestamp and seed
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if is_inpaint:
+        if is_outpaint:
+            prefix = "outpaint_"
+        elif is_inpaint:
             prefix = "inpaint_"
         elif is_img2img:
             prefix = "img2img_"

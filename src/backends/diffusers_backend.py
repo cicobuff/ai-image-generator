@@ -19,7 +19,7 @@ import torch
 warnings.filterwarnings("ignore", message=".*Pipelines loaded with.*dtype=torch.float16.*cannot run with.*cpu.*")
 warnings.filterwarnings("ignore", message=".*upcast_vae.*is deprecated.*")
 
-from PIL import Image
+from PIL import Image, ImageDraw
 from diffusers import (
     StableDiffusionXLPipeline,
     StableDiffusionXLImg2ImgPipeline,
@@ -1178,6 +1178,335 @@ class DiffusersBackend:
         if params.seed == -1:
             return torch.randint(0, 2**32 - 1, (1,)).item()
         return params.seed
+
+    def generate_outpaint(
+        self,
+        params: GenerationParams,
+        input_image: Image.Image,
+        extensions: dict,
+        strength: float = 1.0,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Optional[Image.Image]:
+        """
+        Generate an outpainted image by extending the image in specified directions.
+
+        The working canvas is kept approximately the same size as the original by
+        cropping from the opposite side of each extension. After generation, the
+        result is composited back onto the full-size output.
+
+        Args:
+            params: Generation parameters
+            input_image: Input image to outpaint
+            extensions: Dict with 'left', 'right', 'top', 'bottom' extension amounts in pixels
+            strength: How much to transform extended areas (0=no change, 1=full generation)
+            progress_callback: Callback for step progress (current_step, total_steps)
+
+        Returns:
+            Generated PIL Image (extended) or None if generation failed
+        """
+        if not self.is_loaded or self._inpaint_pipeline is None:
+            _log("No model loaded for outpainting")
+            return None
+
+        try:
+            import numpy as np
+
+            # Extract extension amounts
+            left_ext = extensions.get('left', 0)
+            right_ext = extensions.get('right', 0)
+            top_ext = extensions.get('top', 0)
+            bottom_ext = extensions.get('bottom', 0)
+
+            orig_width = input_image.width
+            orig_height = input_image.height
+
+            if input_image.mode != "RGB":
+                input_image = input_image.convert("RGB")
+
+            # Calculate how much to crop from opposite sides to keep working canvas manageable
+            # We want the working canvas to be approximately the original size
+            crop_left = right_ext  # If extending right, crop from left
+            crop_right = left_ext  # If extending left, crop from right
+            crop_top = bottom_ext  # If extending bottom, crop from top
+            crop_bottom = top_ext  # If extending top, crop from bottom
+
+            # Ensure we don't crop more than the image size minus a minimum overlap
+            min_overlap = 64  # Minimum pixels of original image to keep for context
+            crop_left = min(crop_left, orig_width - min_overlap)
+            crop_right = min(crop_right, orig_width - min_overlap - crop_left)
+            crop_top = min(crop_top, orig_height - min_overlap)
+            crop_bottom = min(crop_bottom, orig_height - min_overlap - crop_top)
+
+            # Ensure crops are non-negative
+            crop_left = max(0, crop_left)
+            crop_right = max(0, crop_right)
+            crop_top = max(0, crop_top)
+            crop_bottom = max(0, crop_bottom)
+
+            # Crop the original image
+            cropped_image = input_image.crop((
+                crop_left,
+                crop_top,
+                orig_width - crop_right,
+                orig_height - crop_bottom
+            ))
+            cropped_width = cropped_image.width
+            cropped_height = cropped_image.height
+
+            _log(f"Original: {orig_width}x{orig_height}, Cropped: {cropped_width}x{cropped_height}")
+            _log(f"Crops: left={crop_left}, right={crop_right}, top={crop_top}, bottom={crop_bottom}")
+
+            # Calculate working canvas dimensions
+            work_width = cropped_width + left_ext + right_ext
+            work_height = cropped_height + top_ext + bottom_ext
+
+            # Round to be divisible by 8
+            work_width = ((work_width + 7) // 8) * 8
+            work_height = ((work_height + 7) // 8) * 8
+
+            # Adjust extensions to match rounded dimensions
+            width_diff = work_width - (cropped_width + left_ext + right_ext)
+            height_diff = work_height - (cropped_height + top_ext + bottom_ext)
+
+            if width_diff > 0:
+                if right_ext > 0:
+                    right_ext += width_diff
+                elif left_ext > 0:
+                    left_ext += width_diff
+                else:
+                    right_ext = width_diff
+
+            if height_diff > 0:
+                if bottom_ext > 0:
+                    bottom_ext += height_diff
+                elif top_ext > 0:
+                    top_ext += height_diff
+                else:
+                    bottom_ext = height_diff
+
+            _log(f"Working canvas: {work_width}x{work_height}")
+            _log(f"Extensions (adjusted): left={left_ext}, right={right_ext}, top={top_ext}, bottom={bottom_ext}")
+
+            # Create working canvas
+            work_image = Image.new("RGB", (work_width, work_height), (128, 128, 128))
+
+            # Fill extension areas with edge colors for better blending
+            if left_ext > 0:
+                left_strip = cropped_image.crop((0, 0, min(10, cropped_width), cropped_height))
+                for x in range(left_ext):
+                    work_image.paste(left_strip.resize((1, cropped_height)), (x, top_ext))
+            if right_ext > 0:
+                right_strip = cropped_image.crop((max(0, cropped_width - 10), 0, cropped_width, cropped_height))
+                for x in range(right_ext):
+                    work_image.paste(right_strip.resize((1, cropped_height)), (left_ext + cropped_width + x, top_ext))
+            if top_ext > 0:
+                top_strip = cropped_image.crop((0, 0, cropped_width, min(10, cropped_height)))
+                for y in range(top_ext):
+                    work_image.paste(top_strip.resize((cropped_width, 1)), (left_ext, y))
+            if bottom_ext > 0:
+                bottom_strip = cropped_image.crop((0, max(0, cropped_height - 10), cropped_width, cropped_height))
+                for y in range(bottom_ext):
+                    work_image.paste(bottom_strip.resize((cropped_width, 1)), (left_ext, top_ext + cropped_height + y))
+
+            # Paste cropped image onto working canvas
+            work_image.paste(cropped_image, (left_ext, top_ext))
+
+            # Create mask (white = areas to generate, black = keep original)
+            mask_image = Image.new("L", (work_width, work_height), 255)
+            mask_draw = ImageDraw.Draw(mask_image)
+            mask_draw.rectangle(
+                [left_ext, top_ext, left_ext + cropped_width, top_ext + cropped_height],
+                fill=0
+            )
+
+            # Add feathering at the edges for smooth blending
+            active_exts = [e for e in [left_ext, right_ext, top_ext, bottom_ext] if e > 0]
+            feather_size = min(32, min(active_exts) if active_exts else 32)
+
+            if feather_size > 0:
+                mask_arr = np.array(mask_image)
+
+                if left_ext > 0:
+                    for i in range(min(feather_size, cropped_width)):
+                        alpha = int(255 * (1 - i / feather_size))
+                        mask_arr[top_ext:top_ext + cropped_height, left_ext + i] = alpha
+                if right_ext > 0:
+                    for i in range(min(feather_size, cropped_width)):
+                        alpha = int(255 * (1 - i / feather_size))
+                        mask_arr[top_ext:top_ext + cropped_height, left_ext + cropped_width - 1 - i] = alpha
+                if top_ext > 0:
+                    for i in range(min(feather_size, cropped_height)):
+                        alpha = int(255 * (1 - i / feather_size))
+                        mask_arr[top_ext + i, left_ext:left_ext + cropped_width] = np.maximum(
+                            mask_arr[top_ext + i, left_ext:left_ext + cropped_width], alpha
+                        )
+                if bottom_ext > 0:
+                    for i in range(min(feather_size, cropped_height)):
+                        alpha = int(255 * (1 - i / feather_size))
+                        mask_arr[top_ext + cropped_height - 1 - i, left_ext:left_ext + cropped_width] = np.maximum(
+                            mask_arr[top_ext + cropped_height - 1 - i, left_ext:left_ext + cropped_width], alpha
+                        )
+
+                mask_image = Image.fromarray(mask_arr)
+
+            # Set up scheduler and encode prompts
+            self._inpaint_pipeline.scheduler = self._get_scheduler(params.sampler, params.scheduler)
+            self._encode_prompts(params.prompt, params.negative_prompt)
+
+            # Handle seed
+            generator = None if params.seed == -1 else torch.Generator(device="cpu").manual_seed(params.seed)
+
+            # Calculate effective steps
+            effective_steps = max(1, int(params.steps * strength))
+
+            # Create progress callback wrapper
+            callback_fn = None
+            if progress_callback:
+                def callback_on_step_end(pipeline, step, timestep, callback_kwargs):
+                    progress_callback(step + 1, effective_steps)
+                    return callback_kwargs
+                callback_fn = callback_on_step_end
+
+            # Build generation kwargs
+            gen_kwargs = {
+                "image": work_image,
+                "mask_image": mask_image,
+                "width": work_width,
+                "height": work_height,
+                "strength": strength,
+                "num_inference_steps": params.steps,
+                "guidance_scale": params.cfg_scale,
+                "generator": generator,
+                "callback_on_step_end": callback_fn,
+            }
+
+            # Use cached embeddings
+            if self._is_sdxl:
+                gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
+                gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
+                gen_kwargs["pooled_prompt_embeds"] = self._cached_pooled_prompt_embeds
+                gen_kwargs["negative_pooled_prompt_embeds"] = self._cached_negative_pooled_prompt_embeds
+            else:
+                gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
+                if self._cached_negative_prompt_embeds is not None:
+                    gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
+
+            # Generate on working canvas
+            result = self._inpaint_pipeline(**gen_kwargs)
+
+            if not result.images:
+                return None
+
+            generated = result.images[0]
+
+            # Now composite the generated result back onto a full-size output
+            # Final dimensions = original + all extensions
+            orig_left_ext = extensions.get('left', 0)
+            orig_right_ext = extensions.get('right', 0)
+            orig_top_ext = extensions.get('top', 0)
+            orig_bottom_ext = extensions.get('bottom', 0)
+
+            final_width = orig_width + orig_left_ext + orig_right_ext
+            final_height = orig_height + orig_top_ext + orig_bottom_ext
+
+            # No rounding needed for final output - only the working canvas needs divisible by 8
+            final_image = Image.new("RGB", (final_width, final_height), (128, 128, 128))
+
+            # Paste original image at its position (offset by left/top extensions)
+            final_image.paste(input_image, (orig_left_ext, orig_top_ext))
+
+            # Blend size for smooth transitions
+            blend_size = 48
+
+            # Helper function to create gradient alpha blend
+            def blend_regions(base_img, overlay_img, paste_x, paste_y, direction):
+                """Blend overlay onto base with gradient at the edge."""
+                overlay_w, overlay_h = overlay_img.size
+
+                # Create alpha mask with gradient
+                alpha = Image.new("L", (overlay_w, overlay_h), 255)
+                alpha_arr = np.array(alpha)
+
+                if direction == "left":
+                    # Gradient on right edge (fades into original)
+                    for i in range(min(blend_size, overlay_w)):
+                        alpha_arr[:, overlay_w - 1 - i] = int(255 * i / blend_size)
+                elif direction == "right":
+                    # Gradient on left edge
+                    for i in range(min(blend_size, overlay_w)):
+                        alpha_arr[:, i] = int(255 * i / blend_size)
+                elif direction == "top":
+                    # Gradient on bottom edge
+                    for i in range(min(blend_size, overlay_h)):
+                        alpha_arr[overlay_h - 1 - i, :] = int(255 * i / blend_size)
+                elif direction == "bottom":
+                    # Gradient on top edge
+                    for i in range(min(blend_size, overlay_h)):
+                        alpha_arr[i, :] = int(255 * i / blend_size)
+
+                alpha = Image.fromarray(alpha_arr)
+
+                # Get the region from base that will be blended
+                base_region = base_img.crop((
+                    paste_x, paste_y,
+                    paste_x + overlay_w, paste_y + overlay_h
+                ))
+
+                # Composite using alpha
+                blended = Image.composite(overlay_img, base_region, alpha)
+                base_img.paste(blended, (paste_x, paste_y))
+
+            # Extract and blend the generated extension areas
+            # Include overlap region for blending
+            overlap = blend_size
+
+            # Left extension with overlap
+            if left_ext > 0:
+                # Extract extension + overlap from generated
+                ext_with_overlap = min(left_ext + overlap, left_ext + cropped_width)
+                left_region = generated.crop((0, top_ext, ext_with_overlap, top_ext + cropped_height))
+                paste_y = orig_top_ext + crop_top
+                blend_regions(final_image, left_region, 0, paste_y, "left")
+
+            # Right extension with overlap
+            if right_ext > 0:
+                # Extract overlap + extension from generated
+                start_x = max(0, left_ext + cropped_width - overlap)
+                right_region = generated.crop((
+                    start_x, top_ext,
+                    left_ext + cropped_width + right_ext, top_ext + cropped_height
+                ))
+                paste_x = orig_left_ext + orig_width - overlap
+                paste_y = orig_top_ext + crop_top
+                blend_regions(final_image, right_region, paste_x, paste_y, "right")
+
+            # Top extension with overlap
+            if top_ext > 0:
+                ext_with_overlap = min(top_ext + overlap, top_ext + cropped_height)
+                top_region = generated.crop((left_ext, 0, left_ext + cropped_width, ext_with_overlap))
+                paste_x = orig_left_ext + crop_left
+                blend_regions(final_image, top_region, paste_x, 0, "top")
+
+            # Bottom extension with overlap
+            if bottom_ext > 0:
+                start_y = max(0, top_ext + cropped_height - overlap)
+                bottom_region = generated.crop((
+                    left_ext, start_y,
+                    left_ext + cropped_width, top_ext + cropped_height + bottom_ext
+                ))
+                paste_x = orig_left_ext + crop_left
+                paste_y = orig_top_ext + orig_height - overlap
+                blend_regions(final_image, bottom_region, paste_x, paste_y, "bottom")
+
+            _log(f"Outpaint complete: {final_width}x{final_height}")
+
+            return final_image
+
+        except Exception as e:
+            import traceback
+            _log(f"Error during outpaint generation: {e}")
+            traceback.print_exc()
+            return None
 
 
 # Global backend instance

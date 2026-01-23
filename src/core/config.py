@@ -56,6 +56,15 @@ class WindowConfig:
 
 
 @dataclass
+class OutpaintConfig:
+    """Configuration for outpainting settings."""
+    # Edge zone size in pixels - area near image edge where outpaint mask can be drawn
+    edge_zone_size: int = 200
+    # Default extension size for outpaint masks
+    default_extension: int = 256
+
+
+@dataclass
 class AppConfig:
     """Main application configuration."""
     version: str = "1.0"
@@ -63,6 +72,7 @@ class AppConfig:
     gpus: GPUConfig = field(default_factory=GPUConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     window: WindowConfig = field(default_factory=WindowConfig)
+    outpaint: OutpaintConfig = field(default_factory=OutpaintConfig)
 
     def to_dict(self) -> dict:
         """Convert config to dictionary for YAML serialization."""
@@ -72,6 +82,7 @@ class AppConfig:
             "gpus": asdict(self.gpus),
             "generation": asdict(self.generation),
             "window": asdict(self.window),
+            "outpaint": asdict(self.outpaint),
         }
 
     @classmethod
@@ -83,6 +94,7 @@ class AppConfig:
             gpus=GPUConfig(**data.get("gpus", {})),
             generation=GenerationConfig(**data.get("generation", {})),
             window=WindowConfig(**data.get("window", {})),
+            outpaint=OutpaintConfig(**data.get("outpaint", {})),
         )
 
     def get_models_path(self) -> Path:
