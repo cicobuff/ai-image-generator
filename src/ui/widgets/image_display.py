@@ -7,7 +7,7 @@ import io
 
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, Gdk, GdkPixbuf, GLib
+from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Gio
 
 from PIL import Image, ImageDraw, ImageFilter
 import numpy as np
@@ -101,6 +101,9 @@ class ImageDisplay(Gtk.DrawingArea):
         self._crop_drag_orig_rect: Optional[tuple] = None  # Original rect before drag
         self._on_crop_mask_changed: Optional[Callable[[bool], None]] = None  # Callback when mask changes
 
+        # Drag and drop callback
+        self._on_image_dropped: Optional[Callable[[Path], None]] = None  # Callback when image is dropped
+
         # Drawing state
         self._is_drawing: bool = False
         self._draw_start_x: float = 0
@@ -173,6 +176,14 @@ class ImageDisplay(Gtk.DrawingArea):
         key_controller = Gtk.EventControllerKey()
         key_controller.connect("key-pressed", self._on_key_pressed)
         self.add_controller(key_controller)
+
+        # Drop target for drag and drop support
+        drop_target = Gtk.DropTarget.new(Gio.File, Gdk.DragAction.COPY)
+        drop_target.connect("accept", self._on_drop_accept)
+        drop_target.connect("enter", self._on_drop_enter)
+        drop_target.connect("leave", self._on_drop_leave)
+        drop_target.connect("drop", self._on_drop)
+        self.add_controller(drop_target)
 
     def _widget_to_image_coords(self, widget_x: float, widget_y: float) -> tuple:
         """Convert widget coordinates to image coordinates."""
@@ -419,6 +430,62 @@ class ImageDisplay(Gtk.DrawingArea):
             return True
 
         return False
+
+    def _on_drop_accept(self, drop_target, drop):
+        """Check if we can accept this drop."""
+        # Accept file drops
+        formats = drop.get_formats()
+        if formats.contain_gtype(Gio.File):
+            return True
+        return False
+
+    def _on_drop_enter(self, drop_target, x, y):
+        """Handle drag enter - change cursor to indicate drop is possible."""
+        self.set_cursor(Gdk.Cursor.new_from_name("copy", None))
+        return Gdk.DragAction.COPY
+
+    def _on_drop_leave(self, drop_target):
+        """Handle drag leave - restore cursor."""
+        self.set_cursor(None)
+
+    def _on_drop(self, drop_target, value, x, y):
+        """Handle the actual drop of a file."""
+        if not isinstance(value, Gio.File):
+            return False
+
+        # Get the file path
+        file_path = value.get_path()
+        if file_path is None:
+            # Might be a remote file, try to get URI
+            uri = value.get_uri()
+            if uri:
+                # For remote files, we'd need to download them
+                # For now, just handle local files
+                print(f"Remote files not supported: {uri}")
+                return False
+            return False
+
+        path = Path(file_path)
+
+        # Check if it's an image file
+        valid_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff', '.tif'}
+        if path.suffix.lower() not in valid_extensions:
+            print(f"Not an image file: {path}")
+            return False
+
+        # Notify callback if set (to copy file and update gallery)
+        if self._on_image_dropped:
+            self._on_image_dropped(path)
+        else:
+            # Just load the image directly
+            self.set_image_from_path(path)
+
+        self.set_cursor(None)
+        return True
+
+    def set_on_image_dropped(self, callback: Optional[Callable[[Path], None]]):
+        """Set callback for when an image is dropped onto the display."""
+        self._on_image_dropped = callback
 
     def _on_pan_pressed(self, gesture, n_press, x, y):
         """Handle middle mouse button press for panning."""
@@ -1859,3 +1926,7 @@ class ImageDisplayFrame(Gtk.Frame):
     def reset_zoom(self):
         """Reset zoom to fit window."""
         self._display.reset_zoom()
+
+    def set_on_image_dropped(self, callback: Optional[Callable[[Path], None]]):
+        """Set callback for when an image is dropped onto the display."""
+        self._display.set_on_image_dropped(callback)

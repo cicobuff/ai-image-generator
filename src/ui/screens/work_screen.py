@@ -251,6 +251,7 @@ class WorkScreen(Gtk.Box):
         self._image_display = ImageDisplayFrame()
         self._image_display.set_vexpand(True)
         self._image_display.set_size_request(-1, 200)  # Minimum height
+        self._image_display.set_on_image_dropped(self._on_image_dropped)
         self._center_paned.set_start_child(self._image_display)
         self._center_paned.set_resize_start_child(True)
         self._center_paned.set_shrink_start_child(True)
@@ -1593,6 +1594,64 @@ class WorkScreen(Gtk.Box):
 
         # Update upscale button state
         self._update_upscale_button_state()
+
+    def _on_image_dropped(self, source_path: Path):
+        """Handle image dropped onto the image display area."""
+        import shutil
+        from PIL import Image
+
+        # Get the target directory
+        output_dir = self._thumbnail_gallery.get_output_directory()
+
+        # Ensure the directory exists
+        if not output_dir.exists():
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Determine the target filename (rename if exists)
+        target_path = output_dir / source_path.name
+        if target_path.exists():
+            # Find a unique name by adding a counter
+            base_name = source_path.stem
+            extension = source_path.suffix
+            counter = 1
+            while target_path.exists():
+                target_path = output_dir / f"{base_name}_{counter}{extension}"
+                counter += 1
+
+        try:
+            # Copy the file to the target directory
+            shutil.copy2(source_path, target_path)
+
+            # Load the image
+            image = Image.open(target_path)
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+
+            # Display the image
+            self._image_display.set_image(image)
+
+            # Add to the gallery
+            self._thumbnail_gallery.add_image(target_path, image)
+
+            # Update toolbar state
+            self._toolbar.set_has_image(True)
+            self._update_upscale_button_state()
+
+            # Try to load metadata if available
+            metadata = load_metadata_from_image(target_path)
+            if metadata:
+                self._prompt_panel.set_prompts(metadata.prompt, metadata.negative_prompt)
+                self._params_widget.set_size(metadata.width, metadata.height)
+                self._params_widget.set_steps(metadata.steps)
+                self._params_widget.set_cfg_scale(metadata.cfg_scale)
+                self._params_widget.set_seed(metadata.seed)
+                self._params_widget.set_sampler(metadata.sampler)
+                self._status_bar.set_text(f"Imported: {target_path.name} (parameters restored)")
+            else:
+                self._status_bar.set_text(f"Imported: {target_path.name}")
+
+        except Exception as e:
+            self._status_bar.set_text(f"Error importing image: {e}")
 
     def _on_upscale_settings_changed(self):
         """Handle upscale settings change (enabled/model changed)."""
