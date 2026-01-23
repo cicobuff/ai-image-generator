@@ -579,3 +579,31 @@ dropdown.purple-button > button > box > image {
     padding: 2px;
     -gtk-icon-size: 14px;
 }
+
+/* Collapse toggle buttons - vertical (for left/right panels) */
+.collapse-toggle {
+    min-width: 20px;
+    min-height: 60px;
+    padding: 4px 2px;
+    border-radius: 4px;
+    background: alpha(@theme_fg_color, 0.08);
+    -gtk-icon-size: 14px;
+}
+
+.collapse-toggle:hover {
+    background: alpha(@theme_fg_color, 0.15);
+}
+
+/* Collapse toggle for bottom panel - horizontal bar */
+.collapse-toggle-bottom {
+    min-width: 100px;
+    min-height: 20px;
+    padding: 2px 12px;
+    border-radius: 4px;
+    background: alpha(@theme_fg_color, 0.08);
+    -gtk-icon-size: 14px;
+}
+
+.collapse-toggle-bottom:hover {
+    background: alpha(@theme_fg_color, 0.15);
+}

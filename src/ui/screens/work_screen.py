@@ -27,6 +27,7 @@ from src.ui.widgets.toolbar import InpaintTool, OutpaintTool, CropTool
 from src.ui.widgets.image_display import MaskTool, OutpaintTool as ImageOutpaintTool
 from src.ui.widgets.lora_selector import LoRASelectorPanel
 from src.ui.widgets.info_helper import SectionHeader, add_hover_tooltip, SECTION_INFO, LABEL_TOOLTIPS
+from src.ui.widgets.collapsible_panel import PanedCollapseButton
 from src.utils.metadata import load_metadata_from_image
 
 
@@ -86,6 +87,9 @@ class WorkScreen(Gtk.Box):
         self._paned_outer.set_vexpand(True)
         self.append(self._paned_outer)
 
+        # Get window config for collapsed states
+        window_config = config_manager.config.window
+
         # Left panel
         left_panel = self._create_left_panel()
         self._paned_outer.set_start_child(left_panel)
@@ -109,9 +113,39 @@ class WorkScreen(Gtk.Box):
         self._paned_inner.set_shrink_end_child(True)  # Allow shrinking
 
         # Restore panel sizes from config
-        window_config = config_manager.config.window
         self._paned_outer.set_position(window_config.left_panel_width)
         self._paned_inner.set_position(window_config.right_panel_position)
+
+        # Create and add collapse buttons to their containers
+        # Left panel collapse button (on the right edge of left panel)
+        self._left_collapse_btn = PanedCollapseButton(
+            self._paned_outer,
+            collapse_direction="left",
+            initially_collapsed=window_config.left_panel_collapsed,
+        )
+        self._left_collapse_btn.set_saved_position(window_config.left_panel_width)
+        self._left_collapse_btn.set_valign(Gtk.Align.CENTER)
+        self._left_panel_container.append(self._left_collapse_btn)
+
+        # Right panel collapse button (on the left edge of right panel)
+        self._right_collapse_btn = PanedCollapseButton(
+            self._paned_inner,
+            collapse_direction="right",
+            initially_collapsed=window_config.right_panel_collapsed,
+        )
+        self._right_collapse_btn.set_saved_position(window_config.right_panel_position)
+        self._right_collapse_btn.set_valign(Gtk.Align.CENTER)
+        self._right_panel_container.prepend(self._right_collapse_btn)
+
+        # Prompt panel collapse button (at the top of prompt section)
+        self._prompt_collapse_btn = PanedCollapseButton(
+            self._center_paned,
+            collapse_direction="bottom",
+            initially_collapsed=window_config.prompt_panel_collapsed,
+        )
+        self._prompt_collapse_btn.set_saved_position(window_config.center_panel_height)
+        self._prompt_collapse_btn.set_halign(Gtk.Align.CENTER)
+        self._prompt_panel_container.prepend(self._prompt_collapse_btn)
 
         # Status bar
         self._status_bar = Gtk.Label(label="Ready")
@@ -125,10 +159,15 @@ class WorkScreen(Gtk.Box):
 
     def _create_left_panel(self) -> Gtk.Widget:
         """Create the left panel with model selectors and parameters."""
+        # Container with scrolled content and collapse button
+        container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled.add_css_class("left-panel")
         scrolled.set_size_request(200, -1)  # Minimum width
+        scrolled.set_hexpand(True)
+        container.append(scrolled)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         box.set_margin_top(8)
@@ -136,6 +175,9 @@ class WorkScreen(Gtk.Box):
         box.set_margin_start(8)
         box.set_margin_end(8)
         scrolled.set_child(box)
+
+        # Store reference to add collapse button later
+        self._left_panel_container = container
 
         # VRAM display (at the top)
         self._vram_display = VRAMDisplay()
@@ -235,17 +277,22 @@ class WorkScreen(Gtk.Box):
         )
         box.append(self._batch_widget)
 
-        return scrolled
+        return container
 
     def _create_center_panel(self) -> Gtk.Widget:
         """Create the center panel with image display and prompts."""
+        # Main container for center panel
+        center_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        center_box.add_css_class("center-panel")
+        center_box.set_margin_top(12)
+        center_box.set_margin_bottom(12)
+        center_box.set_margin_start(12)
+        center_box.set_margin_end(12)
+
         # Use vertical paned to allow resizing between image and prompts
         self._center_paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
-        self._center_paned.add_css_class("center-panel")
-        self._center_paned.set_margin_top(12)
-        self._center_paned.set_margin_bottom(12)
-        self._center_paned.set_margin_start(12)
-        self._center_paned.set_margin_end(12)
+        self._center_paned.set_vexpand(True)
+        center_box.append(self._center_paned)
 
         # Image display (top)
         self._image_display = ImageDisplayFrame()
@@ -257,17 +304,24 @@ class WorkScreen(Gtk.Box):
         self._center_paned.set_shrink_start_child(True)
 
         # Prompt section (bottom) - contains prompt manager + prompts
+        # Container with collapse button at top
+        prompt_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._prompt_panel_container = prompt_container
+
         self._prompt_section = PromptSection()
         self._prompt_section.set_size_request(-1, 150)  # Minimum height
-        self._center_paned.set_end_child(self._prompt_section)
+        self._prompt_section.set_vexpand(True)
+        prompt_container.append(self._prompt_section)
+
+        self._center_paned.set_end_child(prompt_container)
         self._center_paned.set_resize_end_child(True)
         self._center_paned.set_shrink_end_child(True)
 
         # Restore center panel position from config
-        self._center_paned.set_position(config_manager.config.window.center_panel_height)
+        window_config = config_manager.config.window
+        self._center_paned.set_position(window_config.center_panel_height)
 
         # Restore prompt section positions from config
-        window_config = config_manager.config.window
         if window_config.prompt_section_width > 0:
             self._prompt_section.set_paned_positions({
                 "prompts_width": window_config.prompt_section_width,
@@ -285,14 +339,22 @@ class WorkScreen(Gtk.Box):
             window_config.negative_prompt_font_size,
         )
 
-        return self._center_paned
+        return center_box
 
     def _create_right_panel(self) -> Gtk.Widget:
         """Create the right panel with thumbnail gallery."""
+        # Container with collapse button and scrolled content
+        container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+
+        # Store reference to add collapse button later
+        self._right_panel_container = container
+
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled.add_css_class("right-panel")
         scrolled.set_size_request(150, -1)  # Minimum width
+        scrolled.set_hexpand(True)
+        container.append(scrolled)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         box.set_margin_top(8)
@@ -310,7 +372,7 @@ class WorkScreen(Gtk.Box):
         self._thumbnail_gallery.set_vexpand(True)
         box.append(self._thumbnail_gallery)
 
-        return scrolled
+        return container
 
     def _connect_signals(self):
         """Connect to generation service signals."""
@@ -1811,10 +1873,21 @@ class WorkScreen(Gtk.Box):
 
     def get_panel_positions(self) -> dict:
         """Get current panel positions for saving to config."""
+        # For collapsed panels, use the saved (expanded) position instead of current
+        left_pos = (self._left_collapse_btn._saved_position
+                    if self._left_collapse_btn.collapsed and self._left_collapse_btn._saved_position
+                    else self._paned_outer.get_position())
+        right_pos = (self._right_collapse_btn._saved_position
+                     if self._right_collapse_btn.collapsed and self._right_collapse_btn._saved_position
+                     else self._paned_inner.get_position())
+        center_pos = (self._prompt_collapse_btn._saved_position
+                      if self._prompt_collapse_btn.collapsed and self._prompt_collapse_btn._saved_position
+                      else self._center_paned.get_position())
+
         positions = {
-            "left": self._paned_outer.get_position(),
-            "right": self._paned_inner.get_position(),
-            "center": self._center_paned.get_position(),
+            "left": left_pos,
+            "right": right_pos,
+            "center": center_pos,
         }
         # Add prompt section positions
         prompt_positions = self._prompt_section.get_paned_positions()
@@ -1826,4 +1899,8 @@ class WorkScreen(Gtk.Box):
         font_sizes = self._prompt_section.get_font_sizes()
         positions["positive_prompt_font_size"] = font_sizes.get("positive", 0)
         positions["negative_prompt_font_size"] = font_sizes.get("negative", 0)
+        # Add collapsed states
+        positions["left_panel_collapsed"] = self._left_collapse_btn.collapsed
+        positions["right_panel_collapsed"] = self._right_collapse_btn.collapsed
+        positions["prompt_panel_collapsed"] = self._prompt_collapse_btn.collapsed
         return positions
