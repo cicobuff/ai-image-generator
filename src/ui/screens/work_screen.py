@@ -23,7 +23,7 @@ from src.ui.widgets.thumbnail_gallery import ThumbnailGallery
 from src.ui.widgets.toolbar import Toolbar
 from src.ui.widgets.upscale_settings import UpscaleSettingsWidget
 from src.ui.widgets.batch_settings import BatchSettingsWidget
-from src.ui.widgets.toolbar import InpaintTool, OutpaintTool
+from src.ui.widgets.toolbar import InpaintTool, OutpaintTool, CropTool
 from src.ui.widgets.image_display import MaskTool, OutpaintTool as ImageOutpaintTool
 from src.ui.widgets.lora_selector import LoRASelectorPanel
 from src.utils.metadata import load_metadata_from_image
@@ -71,6 +71,10 @@ class WorkScreen(Gtk.Box):
             on_outpaint_tool_changed=self._on_outpaint_tool_changed,
             on_clear_outpaint_masks=self._on_clear_outpaint_masks,
             on_generate_outpaint=self._on_generate_outpaint,
+            on_crop_mode_changed=self._on_crop_mode_changed,
+            on_crop_tool_changed=self._on_crop_tool_changed,
+            on_clear_crop_mask=self._on_clear_crop_mask,
+            on_crop_image=self._on_crop_image,
         )
         self.append(self._toolbar)
 
@@ -1349,6 +1353,82 @@ class WorkScreen(Gtk.Box):
             output_dir=output_dir,
             loras=loras if loras else None,
         )
+
+    # Crop mode handlers
+    def _on_crop_mode_changed(self, enabled: bool):
+        """Handle Crop Mode toggle."""
+        self._image_display.set_crop_mode(enabled)
+
+        # Set callback for crop mask changes
+        if enabled:
+            self._image_display.set_on_crop_mask_changed(self._on_crop_mask_exists_changed)
+        else:
+            self._image_display.set_on_crop_mask_changed(None)
+
+        # Update center panel visual indication
+        center_panel = self._image_display.get_parent()
+        if center_panel:
+            if enabled:
+                center_panel.add_css_class("center-panel-crop-mode")
+                center_panel.remove_css_class("center-panel-edit-mode")
+                center_panel.remove_css_class("center-panel-outpaint-mode")
+            else:
+                center_panel.remove_css_class("center-panel-crop-mode")
+
+        self._status_bar.set_text("Crop mode enabled" if enabled else "Crop mode disabled")
+
+    def _on_crop_mask_exists_changed(self, exists: bool):
+        """Handle crop mask creation/deletion."""
+        self._toolbar.set_crop_mask_exists(exists)
+
+    def _on_crop_tool_changed(self, tool):
+        """Handle crop tool change."""
+        from src.ui.widgets.image_display import CropTool as ImageCropTool
+        if tool.value == "draw":
+            self._image_display.set_crop_tool(ImageCropTool.DRAW)
+        else:
+            self._image_display.set_crop_tool(ImageCropTool.NONE)
+
+    def _on_clear_crop_mask(self):
+        """Handle Clear Crop Mask button click."""
+        self._image_display.clear_crop_mask()
+        self._status_bar.set_text("Crop mask cleared")
+
+    def _on_crop_image(self):
+        """Handle Crop Image button click."""
+        if not self._image_display.has_crop_mask():
+            self._status_bar.set_text("Please draw a crop region first")
+            return
+
+        # Get the cropped image
+        cropped = self._image_display.crop_image()
+        if cropped is None:
+            self._status_bar.set_text("Crop failed - no valid region")
+            return
+
+        # Clear the crop mask
+        self._image_display.clear_crop_mask()
+
+        # Display the cropped image
+        self._image_display.set_image(cropped)
+
+        # Save the cropped image
+        output_dir = self._thumbnail_gallery.get_output_directory()
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"crop_{timestamp}.png"
+        filepath = output_dir / filename
+
+        try:
+            cropped.save(filepath)
+            self._thumbnail_gallery.add_image(filepath, cropped)
+            self._status_bar.set_text(f"Cropped: {filename} ({cropped.width}x{cropped.height})")
+        except Exception as e:
+            self._status_bar.set_text(f"Error saving cropped image: {e}")
+
+        # Update toolbar has_image state
+        self._toolbar.set_has_image(True)
+        self._update_upscale_button_state()
 
     def _on_state_changed(self, state: GenerationState):
         """Handle generation state change."""

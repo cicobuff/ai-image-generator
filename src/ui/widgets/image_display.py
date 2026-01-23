@@ -34,16 +34,35 @@ class OutpaintDirection(Enum):
     BOTTOM = "bottom"
 
 
+class CropTool(Enum):
+    """Crop mask drawing tools."""
+    NONE = "none"
+    DRAW = "draw"
+
+
+class CropDragMode(Enum):
+    """Mode for crop mask interaction."""
+    NONE = "none"
+    DRAWING = "drawing"  # Creating a new crop mask
+    MOVING = "moving"    # Moving the entire mask
+    RESIZE_TL = "resize_tl"  # Resizing from top-left corner
+    RESIZE_TR = "resize_tr"  # Resizing from top-right corner
+    RESIZE_BL = "resize_bl"  # Resizing from bottom-left corner
+    RESIZE_BR = "resize_br"  # Resizing from bottom-right corner
+
+
 class ImageDisplay(Gtk.DrawingArea):
     """Widget for displaying generated images using Cairo with mask overlay support."""
 
     PAINT_RADIUS = 25  # Brush radius for paint tool
     MASK_COLOR = (144, 238, 144, 128)  # Light green with 50% transparency
     OUTPAINT_MASK_COLOR = (236, 64, 122, 128)  # Pink with 50% transparency
+    CROP_MASK_COLOR = (126, 87, 194, 128)  # Purple with 50% transparency
     ZOOM_STEP = 1.2  # Zoom factor per scroll step
     MIN_ZOOM = 0.1  # Minimum zoom (10%)
     MAX_ZOOM = 20.0  # Maximum zoom (2000%)
     DEFAULT_EDGE_ZONE = 200  # Default edge zone size in pixels
+    CROP_HANDLE_SIZE = 12  # Size of corner handles for crop resize
 
     def __init__(self, edge_zone_size: int = DEFAULT_EDGE_ZONE):
         super().__init__()
@@ -70,6 +89,16 @@ class ImageDisplay(Gtk.DrawingArea):
         }
         self._current_outpaint_direction: OutpaintDirection = OutpaintDirection.NONE
         self._outpaint_draw_start: float = 0  # Starting position for outpaint drag
+
+        # Crop-related state
+        self._crop_mode: bool = False
+        self._crop_tool: CropTool = CropTool.NONE
+        self._crop_rect: Optional[tuple] = None  # (x, y, w, h) in image coordinates
+        self._crop_drag_mode: CropDragMode = CropDragMode.NONE
+        self._crop_drag_start_x: float = 0
+        self._crop_drag_start_y: float = 0
+        self._crop_drag_orig_rect: Optional[tuple] = None  # Original rect before drag
+        self._on_crop_mask_changed: Optional[Callable[[bool], None]] = None  # Callback when mask changes
 
         # Drawing state
         self._is_drawing: bool = False
@@ -217,6 +246,40 @@ class ImageDisplay(Gtk.DrawingArea):
 
         return OutpaintDirection.NONE
 
+    def _get_crop_handle_at(self, widget_x: float, widget_y: float) -> CropDragMode:
+        """Check if widget coordinates are over a crop mask handle or inside the mask.
+
+        Returns the appropriate CropDragMode for the position.
+        """
+        if self._crop_rect is None or self._pixbuf is None:
+            return CropDragMode.NONE
+
+        rx, ry, rw, rh = self._crop_rect
+        handle_size = self.CROP_HANDLE_SIZE / self._scale  # Handle size in image coords
+
+        # Get cursor position in image coordinates
+        img_x, img_y = self._widget_to_image_coords_unclamped(widget_x, widget_y)
+
+        # Check corners first (for resize handles)
+        # Top-left
+        if abs(img_x - rx) < handle_size and abs(img_y - ry) < handle_size:
+            return CropDragMode.RESIZE_TL
+        # Top-right
+        if abs(img_x - (rx + rw)) < handle_size and abs(img_y - ry) < handle_size:
+            return CropDragMode.RESIZE_TR
+        # Bottom-left
+        if abs(img_x - rx) < handle_size and abs(img_y - (ry + rh)) < handle_size:
+            return CropDragMode.RESIZE_BL
+        # Bottom-right
+        if abs(img_x - (rx + rw)) < handle_size and abs(img_y - (ry + rh)) < handle_size:
+            return CropDragMode.RESIZE_BR
+
+        # Check if inside the rect (for moving)
+        if rx <= img_x <= rx + rw and ry <= img_y <= ry + rh:
+            return CropDragMode.MOVING
+
+        return CropDragMode.NONE
+
     def _on_motion(self, controller, x, y):
         """Handle mouse motion for cursor updates and panning."""
         # Handle panning with middle mouse button
@@ -257,6 +320,19 @@ class ImageDisplay(Gtk.DrawingArea):
                 self.set_cursor(Gdk.Cursor.new_from_name("s-resize", None))
             else:
                 self.set_cursor(Gdk.Cursor.new_from_name("not-allowed", None))
+        elif self._crop_mode and self._crop_tool == CropTool.DRAW:
+            # Check if we're over a crop mask handle or inside the mask
+            handle = self._get_crop_handle_at(x, y)
+            if handle == CropDragMode.RESIZE_TL or handle == CropDragMode.RESIZE_BR:
+                self.set_cursor(Gdk.Cursor.new_from_name("nwse-resize", None))
+            elif handle == CropDragMode.RESIZE_TR or handle == CropDragMode.RESIZE_BL:
+                self.set_cursor(Gdk.Cursor.new_from_name("nesw-resize", None))
+            elif handle == CropDragMode.MOVING:
+                self.set_cursor(Gdk.Cursor.new_from_name("move", None))
+            elif self._crop_rect is None:
+                self.set_cursor(Gdk.Cursor.new_from_name("crosshair", None))
+            else:
+                self.set_cursor(None)
         elif self._inpaint_mode and self._current_tool != MaskTool.NONE:
             self.set_cursor(Gdk.Cursor.new_from_name("crosshair", None))
         else:
@@ -266,6 +342,8 @@ class ImageDisplay(Gtk.DrawingArea):
         if self._inpaint_mode and self._current_tool == MaskTool.PAINT:
             self.queue_draw()
         elif self._outpaint_mode and self._outpaint_tool == OutpaintTool.EDGE:
+            self.queue_draw()
+        elif self._crop_mode:
             self.queue_draw()
 
     def _on_enter(self, controller, x, y):
@@ -496,6 +574,32 @@ class ImageDisplay(Gtk.DrawingArea):
 
     def _on_drag_begin(self, gesture, start_x, start_y):
         """Handle drag start."""
+        # Handle crop mode
+        if self._crop_mode and self._crop_tool == CropTool.DRAW:
+            if self._pixbuf is None:
+                return
+
+            # Check if we're starting a move/resize or drawing a new mask
+            handle = self._get_crop_handle_at(start_x, start_y)
+
+            if handle != CropDragMode.NONE:
+                # Moving or resizing existing mask
+                self._is_drawing = True
+                self._crop_drag_mode = handle
+                self._crop_drag_start_x = start_x
+                self._crop_drag_start_y = start_y
+                self._crop_drag_orig_rect = self._crop_rect
+            elif self._crop_rect is None:
+                # Drawing a new mask (only if no mask exists)
+                self._is_drawing = True
+                self._crop_drag_mode = CropDragMode.DRAWING
+                self._draw_start_x = start_x
+                self._draw_start_y = start_y
+                img_x, img_y = self._widget_to_image_coords(start_x, start_y)
+                self._crop_drag_start_x = img_x
+                self._crop_drag_start_y = img_y
+            return
+
         # Handle outpaint mode
         if self._outpaint_mode and self._outpaint_tool == OutpaintTool.EDGE:
             if self._pixbuf is None:
@@ -534,6 +638,123 @@ class ImageDisplay(Gtk.DrawingArea):
 
         current_x = self._draw_start_x + offset_x
         current_y = self._draw_start_y + offset_y
+
+        # Handle crop mode
+        if self._crop_mode and self._crop_drag_mode != CropDragMode.NONE:
+            img_x, img_y = self._widget_to_image_coords_unclamped(
+                self._crop_drag_start_x + offset_x,
+                self._crop_drag_start_y + offset_y
+            )
+            img_width = self._pixbuf.get_width()
+            img_height = self._pixbuf.get_height()
+
+            if self._crop_drag_mode == CropDragMode.DRAWING:
+                # Drawing new crop rect
+                start_x = self._crop_drag_start_x
+                start_y = self._crop_drag_start_y
+                img_end_x, img_end_y = self._widget_to_image_coords_unclamped(current_x, current_y)
+
+                # Calculate rect (allow dragging in any direction)
+                rx = min(start_x, img_end_x)
+                ry = min(start_y, img_end_y)
+                rw = abs(img_end_x - start_x)
+                rh = abs(img_end_y - start_y)
+
+                # Clamp to image bounds
+                rx = max(0, rx)
+                ry = max(0, ry)
+                if rx + rw > img_width:
+                    rw = img_width - rx
+                if ry + rh > img_height:
+                    rh = img_height - ry
+
+                self._crop_rect = (rx, ry, rw, rh)
+
+            elif self._crop_drag_mode == CropDragMode.MOVING:
+                # Moving the crop rect
+                if self._crop_drag_orig_rect:
+                    ox, oy, ow, oh = self._crop_drag_orig_rect
+                    # Calculate delta in image coords
+                    orig_img_x, orig_img_y = self._widget_to_image_coords_unclamped(
+                        self._crop_drag_start_x, self._crop_drag_start_y
+                    )
+                    new_img_x, new_img_y = self._widget_to_image_coords_unclamped(
+                        self._crop_drag_start_x + offset_x,
+                        self._crop_drag_start_y + offset_y
+                    )
+                    dx = new_img_x - orig_img_x
+                    dy = new_img_y - orig_img_y
+
+                    new_x = ox + dx
+                    new_y = oy + dy
+
+                    # Clamp to image bounds
+                    new_x = max(0, min(new_x, img_width - ow))
+                    new_y = max(0, min(new_y, img_height - oh))
+
+                    self._crop_rect = (new_x, new_y, ow, oh)
+
+            elif self._crop_drag_mode in (CropDragMode.RESIZE_TL, CropDragMode.RESIZE_TR,
+                                          CropDragMode.RESIZE_BL, CropDragMode.RESIZE_BR):
+                # Resizing the crop rect
+                if self._crop_drag_orig_rect:
+                    ox, oy, ow, oh = self._crop_drag_orig_rect
+                    orig_img_x, orig_img_y = self._widget_to_image_coords_unclamped(
+                        self._crop_drag_start_x, self._crop_drag_start_y
+                    )
+                    new_img_x, new_img_y = self._widget_to_image_coords_unclamped(
+                        self._crop_drag_start_x + offset_x,
+                        self._crop_drag_start_y + offset_y
+                    )
+                    dx = new_img_x - orig_img_x
+                    dy = new_img_y - orig_img_y
+
+                    if self._crop_drag_mode == CropDragMode.RESIZE_TL:
+                        new_x = ox + dx
+                        new_y = oy + dy
+                        new_w = ow - dx
+                        new_h = oh - dy
+                    elif self._crop_drag_mode == CropDragMode.RESIZE_TR:
+                        new_x = ox
+                        new_y = oy + dy
+                        new_w = ow + dx
+                        new_h = oh - dy
+                    elif self._crop_drag_mode == CropDragMode.RESIZE_BL:
+                        new_x = ox + dx
+                        new_y = oy
+                        new_w = ow - dx
+                        new_h = oh + dy
+                    else:  # RESIZE_BR
+                        new_x = ox
+                        new_y = oy
+                        new_w = ow + dx
+                        new_h = oh + dy
+
+                    # Ensure minimum size and valid rect
+                    min_size = 10
+                    if new_w < min_size:
+                        if self._crop_drag_mode in (CropDragMode.RESIZE_TL, CropDragMode.RESIZE_BL):
+                            new_x = ox + ow - min_size
+                        new_w = min_size
+                    if new_h < min_size:
+                        if self._crop_drag_mode in (CropDragMode.RESIZE_TL, CropDragMode.RESIZE_TR):
+                            new_y = oy + oh - min_size
+                        new_h = min_size
+
+                    # Clamp to image bounds
+                    new_x = max(0, new_x)
+                    new_y = max(0, new_y)
+                    if new_x + new_w > img_width:
+                        new_w = img_width - new_x
+                    if new_y + new_h > img_height:
+                        new_h = img_height - new_y
+
+                    self._crop_rect = (new_x, new_y, new_w, new_h)
+
+            self._current_x = current_x
+            self._current_y = current_y
+            self.queue_draw()
+            return
 
         # Handle outpaint mode
         if self._outpaint_mode and self._current_outpaint_direction != OutpaintDirection.NONE:
@@ -581,6 +802,23 @@ class ImageDisplay(Gtk.DrawingArea):
             return
 
         self._is_drawing = False
+
+        # Handle crop mode
+        if self._crop_mode and self._crop_drag_mode != CropDragMode.NONE:
+            # Finalize crop mask
+            if self._crop_rect is not None:
+                rx, ry, rw, rh = self._crop_rect
+                # Ensure we have a valid rect
+                if rw > 0 and rh > 0:
+                    # Notify that crop mask changed
+                    if self._on_crop_mask_changed:
+                        self._on_crop_mask_changed(True)
+                else:
+                    self._crop_rect = None
+            self._crop_drag_mode = CropDragMode.NONE
+            self._crop_drag_orig_rect = None
+            self.queue_draw()
+            return
 
         # Handle outpaint mode - extension is already set during drag
         if self._outpaint_mode and self._current_outpaint_direction != OutpaintDirection.NONE:
@@ -723,6 +961,10 @@ class ImageDisplay(Gtk.DrawingArea):
         if self._outpaint_mode and self._outpaint_tool == OutpaintTool.EDGE and not self._is_drawing:
             self._draw_outpaint_edge_zones(cr, width, height)
 
+        # Draw crop mask overlay
+        if self._crop_mode and self._crop_rect is not None:
+            self._draw_crop_mask(cr, width, height)
+
         # Draw zoom indicator
         if self._zoom_level != 1.0:
             self._draw_zoom_indicator(cr, width, height)
@@ -783,6 +1025,98 @@ class ImageDisplay(Gtk.DrawingArea):
         cr.set_line_width(2)
         cr.arc(self._current_x, self._current_y, scaled_radius, 0, 2 * 3.14159)
         cr.stroke()
+
+    def _draw_crop_mask(self, cr, width, height):
+        """Draw crop mask overlay with handles."""
+        if self._crop_rect is None or self._pixbuf is None:
+            return
+
+        rx, ry, rw, rh = self._crop_rect
+
+        # Convert image coordinates to screen coordinates
+        screen_x = self._img_x + (rx - self._pan_x) * self._scale
+        screen_y = self._img_y + (ry - self._pan_y) * self._scale
+        screen_w = rw * self._scale
+        screen_h = rh * self._scale
+
+        # Draw semi-transparent overlay outside the crop area
+        # (darken the areas that will be cropped out)
+        img_width = self._pixbuf.get_width()
+        img_height = self._pixbuf.get_height()
+        img_screen_x = self._img_x - self._pan_x * self._scale
+        img_screen_y = self._img_y - self._pan_y * self._scale
+        img_screen_w = img_width * self._scale
+        img_screen_h = img_height * self._scale
+
+        cr.set_source_rgba(0, 0, 0, 0.5)
+        # Top region
+        cr.rectangle(img_screen_x, img_screen_y, img_screen_w, screen_y - img_screen_y)
+        cr.fill()
+        # Bottom region
+        cr.rectangle(img_screen_x, screen_y + screen_h, img_screen_w,
+                     (img_screen_y + img_screen_h) - (screen_y + screen_h))
+        cr.fill()
+        # Left region
+        cr.rectangle(img_screen_x, screen_y, screen_x - img_screen_x, screen_h)
+        cr.fill()
+        # Right region
+        cr.rectangle(screen_x + screen_w, screen_y,
+                     (img_screen_x + img_screen_w) - (screen_x + screen_w), screen_h)
+        cr.fill()
+
+        # Draw crop rect border (purple)
+        cr.set_source_rgba(126/255, 87/255, 194/255, 1.0)
+        cr.set_line_width(2)
+        cr.set_dash([])
+        cr.rectangle(screen_x, screen_y, screen_w, screen_h)
+        cr.stroke()
+
+        # Draw corner handles
+        handle_size = self.CROP_HANDLE_SIZE
+        cr.set_source_rgba(126/255, 87/255, 194/255, 1.0)
+
+        # Top-left
+        cr.rectangle(screen_x - handle_size/2, screen_y - handle_size/2, handle_size, handle_size)
+        cr.fill()
+        # Top-right
+        cr.rectangle(screen_x + screen_w - handle_size/2, screen_y - handle_size/2, handle_size, handle_size)
+        cr.fill()
+        # Bottom-left
+        cr.rectangle(screen_x - handle_size/2, screen_y + screen_h - handle_size/2, handle_size, handle_size)
+        cr.fill()
+        # Bottom-right
+        cr.rectangle(screen_x + screen_w - handle_size/2, screen_y + screen_h - handle_size/2, handle_size, handle_size)
+        cr.fill()
+
+        # Draw size tooltip while drawing or resizing
+        if self._is_drawing and self._crop_drag_mode in (CropDragMode.DRAWING,
+                                                          CropDragMode.RESIZE_TL, CropDragMode.RESIZE_TR,
+                                                          CropDragMode.RESIZE_BL, CropDragMode.RESIZE_BR):
+            self._draw_crop_size_tooltip(cr, int(rw), int(rh), self._current_x, self._current_y)
+
+    def _draw_crop_size_tooltip(self, cr, width_px, height_px, cursor_x, cursor_y):
+        """Draw a tooltip showing the crop dimensions near the cursor."""
+        text = f"{width_px} x {height_px}"
+
+        cr.set_font_size(12)
+        cr.select_font_face("Sans", 0, 0)
+        extents = cr.text_extents(text)
+
+        # Position tooltip near cursor (offset to not obstruct)
+        tooltip_x = cursor_x + 15
+        tooltip_y = cursor_y - 10
+
+        # Background
+        padding = 4
+        cr.set_source_rgba(0, 0, 0, 0.8)
+        cr.rectangle(tooltip_x - padding, tooltip_y - extents.height - padding,
+                     extents.width + padding * 2, extents.height + padding * 2)
+        cr.fill()
+
+        # Text
+        cr.set_source_rgb(1, 1, 1)
+        cr.move_to(tooltip_x, tooltip_y)
+        cr.show_text(text)
 
     def _draw_outpaint_overlays(self, cr, width, height):
         """Draw outpaint extension overlays showing where the image will be extended."""
@@ -1107,6 +1441,82 @@ class ImageDisplay(Gtk.DrawingArea):
         """Set the edge zone size for outpaint detection."""
         self._edge_zone_size = max(50, min(size, 500))  # Clamp between 50-500
 
+    # Crop mode methods
+    def set_crop_mode(self, enabled: bool):
+        """Enable or disable crop mode."""
+        self._crop_mode = enabled
+        if not enabled:
+            # Clear crop mask when exiting
+            self._crop_rect = None
+            self._crop_tool = CropTool.NONE
+            if self._on_crop_mask_changed:
+                self._on_crop_mask_changed(False)
+        self.queue_draw()
+
+    def set_crop_tool(self, tool: CropTool):
+        """Set the current crop drawing tool."""
+        self._crop_tool = tool
+        self.queue_draw()
+
+    def clear_crop_mask(self):
+        """Clear the crop mask."""
+        self._crop_rect = None
+        if self._on_crop_mask_changed:
+            self._on_crop_mask_changed(False)
+        self.queue_draw()
+
+    def get_crop_rect(self) -> Optional[tuple]:
+        """Get the current crop rectangle in image coordinates.
+
+        Returns:
+            Tuple (x, y, width, height) or None if no crop mask exists.
+        """
+        if self._crop_rect is None:
+            return None
+        rx, ry, rw, rh = self._crop_rect
+        return (int(rx), int(ry), int(rw), int(rh))
+
+    def has_crop_mask(self) -> bool:
+        """Check if a crop mask has been defined."""
+        return self._crop_rect is not None
+
+    @property
+    def crop_mode(self) -> bool:
+        """Check if crop mode is active."""
+        return self._crop_mode
+
+    def set_on_crop_mask_changed(self, callback: Optional[Callable[[bool], None]]):
+        """Set callback for when crop mask changes."""
+        self._on_crop_mask_changed = callback
+
+    def crop_image(self) -> Optional[Image.Image]:
+        """Crop the current image using the crop mask.
+
+        Handles partial overlap by returning the intersection
+        of the crop rect and the image.
+
+        Returns:
+            Cropped PIL Image or None if no image or crop mask.
+        """
+        if self._pil_image is None or self._crop_rect is None:
+            return None
+
+        rx, ry, rw, rh = self._crop_rect
+        img_w, img_h = self._pil_image.size
+
+        # Calculate intersection of crop rect with image bounds
+        left = max(0, int(rx))
+        top = max(0, int(ry))
+        right = min(img_w, int(rx + rw))
+        bottom = min(img_h, int(ry + rh))
+
+        # Check if there's a valid intersection
+        if left >= right or top >= bottom:
+            return None
+
+        # Crop and return
+        return self._pil_image.crop((left, top, right, bottom))
+
 
 class ImageDisplayFrame(Gtk.Frame):
     """Frame containing the image display with controls."""
@@ -1208,6 +1618,40 @@ class ImageDisplayFrame(Gtk.Frame):
     def set_edge_zone_size(self, size: int):
         """Set the edge zone size for outpaint detection."""
         self._display.set_edge_zone_size(size)
+
+    # Crop mode methods (delegate to display)
+    def set_crop_mode(self, enabled: bool):
+        """Enable or disable crop mode."""
+        self._display.set_crop_mode(enabled)
+
+    def set_crop_tool(self, tool: CropTool):
+        """Set the current crop drawing tool."""
+        self._display.set_crop_tool(tool)
+
+    def clear_crop_mask(self):
+        """Clear the crop mask."""
+        self._display.clear_crop_mask()
+
+    def get_crop_rect(self) -> Optional[tuple]:
+        """Get the current crop rectangle."""
+        return self._display.get_crop_rect()
+
+    def has_crop_mask(self) -> bool:
+        """Check if a crop mask has been defined."""
+        return self._display.has_crop_mask()
+
+    @property
+    def crop_mode(self) -> bool:
+        """Check if crop mode is active."""
+        return self._display.crop_mode
+
+    def set_on_crop_mask_changed(self, callback: Optional[Callable[[bool], None]]):
+        """Set callback for when crop mask changes."""
+        self._display.set_on_crop_mask_changed(callback)
+
+    def crop_image(self) -> Optional[Image.Image]:
+        """Crop the current image using the crop mask."""
+        return self._display.crop_image()
 
     def reset_zoom(self):
         """Reset zoom to fit window."""

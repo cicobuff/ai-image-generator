@@ -23,6 +23,12 @@ class OutpaintTool(Enum):
     EDGE = "edge"  # Draw from edge outward
 
 
+class CropTool(Enum):
+    """Crop mask drawing tools."""
+    NONE = "none"
+    DRAW = "draw"  # Draw crop region
+
+
 class Toolbar(Gtk.Box):
     """Main toolbar with Load, Clear, and Generate buttons."""
 
@@ -42,6 +48,10 @@ class Toolbar(Gtk.Box):
         on_outpaint_tool_changed: Optional[Callable[[str], None]] = None,
         on_clear_outpaint_masks: Optional[Callable[[], None]] = None,
         on_generate_outpaint: Optional[Callable[[], None]] = None,
+        on_crop_mode_changed: Optional[Callable[[bool], None]] = None,
+        on_crop_tool_changed: Optional[Callable[["CropTool"], None]] = None,
+        on_clear_crop_mask: Optional[Callable[[], None]] = None,
+        on_crop_image: Optional[Callable[[], None]] = None,
     ):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self._on_load = on_load
@@ -58,11 +68,18 @@ class Toolbar(Gtk.Box):
         self._on_outpaint_tool_changed = on_outpaint_tool_changed
         self._on_clear_outpaint_masks = on_clear_outpaint_masks
         self._on_generate_outpaint = on_generate_outpaint
+        self._on_crop_mode_changed = on_crop_mode_changed
+        self._on_crop_tool_changed = on_crop_tool_changed
+        self._on_clear_crop_mask = on_clear_crop_mask
+        self._on_crop_image = on_crop_image
 
         self._inpaint_mode = False
         self._outpaint_mode = False
+        self._crop_mode = False
         self._current_tool = InpaintTool.NONE
         self._current_outpaint_tool = OutpaintTool.NONE
+        self._current_crop_tool = CropTool.NONE
+        self._has_crop_mask = False
         self._model_loaded = False
         self._upscale_enabled = False
         self._has_image = False
@@ -282,6 +299,69 @@ class Toolbar(Gtk.Box):
         self._generate_outpaint_button.set_visible(False)
         self.append(self._generate_outpaint_button)
 
+        # Separator before crop
+        self._crop_separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        self._crop_separator.set_margin_start(8)
+        self._crop_separator.set_margin_end(8)
+        self._crop_separator.set_visible(False)
+        self.append(self._crop_separator)
+
+        # Crop Mode toggle with icon
+        self._crop_toggle = Gtk.ToggleButton()
+        crop_mode_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        crop_mode_icon = Gtk.Image.new_from_icon_name("edit-cut-symbolic")
+        crop_mode_label = Gtk.Label(label="Crop Mode")
+        crop_mode_box.append(crop_mode_icon)
+        crop_mode_box.append(crop_mode_label)
+        self._crop_toggle.set_child(crop_mode_box)
+        self._crop_toggle.set_tooltip_text("Enable crop mode to select a region to crop")
+        self._crop_toggle.add_css_class("crop-toggle")
+        self._crop_toggle.connect("toggled", self._on_crop_toggled)
+        self._crop_toggle.set_visible(False)
+        self.append(self._crop_toggle)
+
+        # Crop Mask tool button with icon (visible in crop mode)
+        self._crop_mask_button = Gtk.ToggleButton()
+        crop_mask_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        crop_mask_icon = Gtk.Image.new_from_icon_name("view-fullscreen-symbolic")
+        crop_mask_label = Gtk.Label(label="Crop Mask")
+        crop_mask_box.append(crop_mask_icon)
+        crop_mask_box.append(crop_mask_label)
+        self._crop_mask_button.set_child(crop_mask_box)
+        self._crop_mask_button.set_tooltip_text("Draw crop region on the image")
+        self._crop_mask_button.add_css_class("purple-toggle")
+        self._crop_mask_button.connect("toggled", self._on_crop_mask_toggled)
+        self._crop_mask_button.set_visible(False)
+        self.append(self._crop_mask_button)
+
+        # Clear Crop Mask button with icon (visible in crop mode)
+        self._clear_crop_mask_button = Gtk.Button()
+        clear_crop_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        clear_crop_icon = Gtk.Image.new_from_icon_name("edit-clear-symbolic")
+        clear_crop_label = Gtk.Label(label="Clear Mask")
+        clear_crop_box.append(clear_crop_icon)
+        clear_crop_box.append(clear_crop_label)
+        self._clear_crop_mask_button.set_child(clear_crop_box)
+        self._clear_crop_mask_button.set_tooltip_text("Clear crop mask")
+        self._clear_crop_mask_button.add_css_class("purple-button")
+        self._clear_crop_mask_button.connect("clicked", self._on_clear_crop_mask_clicked)
+        self._clear_crop_mask_button.set_visible(False)
+        self.append(self._clear_crop_mask_button)
+
+        # Crop Image button with icon (visible in crop mode)
+        self._crop_image_button = Gtk.Button()
+        crop_img_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        crop_img_icon = Gtk.Image.new_from_icon_name("object-select-symbolic")
+        crop_img_label = Gtk.Label(label="Crop Image")
+        crop_img_box.append(crop_img_icon)
+        crop_img_box.append(crop_img_label)
+        self._crop_image_button.set_child(crop_img_box)
+        self._crop_image_button.add_css_class("purple-button")
+        self._crop_image_button.set_tooltip_text("Crop image to the selected region")
+        self._crop_image_button.connect("clicked", self._on_crop_image_clicked)
+        self._crop_image_button.set_visible(False)
+        self.append(self._crop_image_button)
+
         # Cancel button (hidden by default)
         self._cancel_button = Gtk.Button(label="Cancel")
         self._cancel_button.add_css_class("destructive-action")
@@ -417,6 +497,56 @@ class Toolbar(Gtk.Box):
         if self._on_generate_outpaint:
             self._on_generate_outpaint()
 
+    def _on_crop_toggled(self, button):
+        """Handle Crop Mode toggle."""
+        self._crop_mode = button.get_active()
+        self._update_crop_ui()
+        if self._on_crop_mode_changed:
+            self._on_crop_mode_changed(self._crop_mode)
+        # Reset tool when exiting crop mode
+        if not self._crop_mode:
+            self._current_crop_tool = CropTool.NONE
+            self._crop_mask_button.set_active(False)
+            if self._on_crop_tool_changed:
+                self._on_crop_tool_changed(CropTool.NONE)
+
+    def _on_crop_mask_toggled(self, button):
+        """Handle Crop Mask tool toggle."""
+        if button.get_active():
+            self._current_crop_tool = CropTool.DRAW
+        else:
+            self._current_crop_tool = CropTool.NONE
+        if self._on_crop_tool_changed:
+            self._on_crop_tool_changed(self._current_crop_tool)
+
+    def _on_clear_crop_mask_clicked(self, button):
+        """Handle Clear Crop Mask button click."""
+        if self._on_clear_crop_mask:
+            self._on_clear_crop_mask()
+        # Re-enable crop mask button after clearing
+        self._has_crop_mask = False
+        self._crop_mask_button.set_sensitive(True)
+
+    def _on_crop_image_clicked(self, button):
+        """Handle Crop Image button click."""
+        if self._on_crop_image:
+            self._on_crop_image()
+
+    def _update_crop_ui(self):
+        """Update visibility of crop-related buttons."""
+        visible = self._crop_mode
+        self._crop_mask_button.set_visible(visible)
+        self._clear_crop_mask_button.set_visible(visible)
+        self._crop_image_button.set_visible(visible)
+        # Disable normal generation buttons in crop mode (keep visible)
+        self._generate_button.set_sensitive(not visible)
+        self._img2img_button.set_sensitive(not visible)
+
+    def set_crop_mask_exists(self, exists: bool):
+        """Update crop mask button sensitivity based on whether a mask exists."""
+        self._has_crop_mask = exists
+        self._crop_mask_button.set_sensitive(not exists)
+
     def _update_outpaint_ui(self):
         """Update visibility of outpaint-related buttons."""
         visible = self._outpaint_mode
@@ -456,7 +586,12 @@ class Toolbar(Gtk.Box):
             self._outpaint_toggle.set_sensitive(self._has_image)
             self._outpaint_mask_button.set_sensitive(True)
             self._clear_outpaint_masks_button.set_sensitive(True)
-            # Restore state based on inpaint/outpaint mode
+            # Restore crop controls sensitivity
+            self._crop_toggle.set_sensitive(self._has_image)
+            self._crop_mask_button.set_sensitive(not self._has_crop_mask)
+            self._clear_crop_mask_button.set_sensitive(True)
+            self._crop_image_button.set_sensitive(True)
+            # Restore state based on inpaint/outpaint/crop mode
             if self._inpaint_mode:
                 # Keep Generate/Img2Img visible but disabled in inpaint mode
                 self._generate_button.set_sensitive(False)
@@ -472,6 +607,13 @@ class Toolbar(Gtk.Box):
                 self._outpaint_mask_button.set_visible(True)
                 self._clear_outpaint_masks_button.set_visible(True)
                 self._generate_outpaint_button.set_visible(True)
+            elif self._crop_mode:
+                # Keep Generate/Img2Img visible but disabled in crop mode
+                self._generate_button.set_sensitive(False)
+                self._img2img_button.set_sensitive(False)
+                self._crop_mask_button.set_visible(True)
+                self._clear_crop_mask_button.set_visible(True)
+                self._crop_image_button.set_visible(True)
             else:
                 # Restore sensitivity when not in edit mode
                 self._generate_button.set_sensitive(True)
@@ -503,6 +645,10 @@ class Toolbar(Gtk.Box):
             self._outpaint_mask_button.set_sensitive(False)
             self._clear_outpaint_masks_button.set_sensitive(False)
             self._generate_outpaint_button.set_sensitive(False)
+            self._crop_toggle.set_sensitive(False)
+            self._crop_mask_button.set_sensitive(False)
+            self._clear_crop_mask_button.set_sensitive(False)
+            self._crop_image_button.set_sensitive(False)
             self._cancel_button.set_visible(True)
             self._progress_bar.set_visible(True)
 
@@ -514,6 +660,7 @@ class Toolbar(Gtk.Box):
             self._upscale_button.set_sensitive(False)
             self._inpaint_toggle.set_sensitive(False)
             self._outpaint_toggle.set_sensitive(False)
+            self._crop_toggle.set_sensitive(False)
             self._cancel_button.set_sensitive(False)
             self._progress_bar.set_visible(True)
 
@@ -526,8 +673,8 @@ class Toolbar(Gtk.Box):
         """Update sensitivity of all generation-related buttons based on model loaded state and edit modes."""
         loaded = self._model_loaded
         # Generate buttons are always active - they will auto-load models if needed
-        # But they should be disabled in inpaint/outpaint mode (keep visible though)
-        in_edit_mode = self._inpaint_mode or self._outpaint_mode
+        # But they should be disabled in inpaint/outpaint/crop mode (keep visible though)
+        in_edit_mode = self._inpaint_mode or self._outpaint_mode or self._crop_mode
         self._generate_button.set_sensitive(not in_edit_mode)
         self._img2img_button.set_sensitive(not in_edit_mode)
         self._generate_inpaint_button.set_sensitive(True)
@@ -562,6 +709,14 @@ class Toolbar(Gtk.Box):
         if not has_image and self._outpaint_mode:
             self._outpaint_toggle.set_active(False)
 
+        # Show/hide crop toggle based on image presence
+        self._crop_separator.set_visible(has_image)
+        self._crop_toggle.set_visible(has_image)
+        self._crop_toggle.set_sensitive(has_image)
+        # If no image and crop mode was on, turn it off
+        if not has_image and self._crop_mode:
+            self._crop_toggle.set_active(False)
+
     @property
     def inpaint_mode(self) -> bool:
         """Check if inpaint mode is active."""
@@ -591,6 +746,21 @@ class Toolbar(Gtk.Box):
         """Exit outpaint mode programmatically."""
         if self._outpaint_mode:
             self._outpaint_toggle.set_active(False)
+
+    @property
+    def crop_mode(self) -> bool:
+        """Check if crop mode is active."""
+        return self._crop_mode
+
+    @property
+    def current_crop_tool(self) -> CropTool:
+        """Get the current crop tool."""
+        return self._current_crop_tool
+
+    def exit_crop_mode(self):
+        """Exit crop mode programmatically."""
+        if self._crop_mode:
+            self._crop_toggle.set_active(False)
 
     def set_progress(self, message: str, fraction: float):
         """Update progress display."""
