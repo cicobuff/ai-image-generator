@@ -75,6 +75,7 @@ class WorkScreen(Gtk.Box):
             on_crop_tool_changed=self._on_crop_tool_changed,
             on_clear_crop_mask=self._on_clear_crop_mask,
             on_crop_image=self._on_crop_image,
+            on_crop_size_changed=self._on_crop_size_changed,
         )
         self.append(self._toolbar)
 
@@ -1429,6 +1430,15 @@ class WorkScreen(Gtk.Box):
         # Update toolbar has_image state
         self._toolbar.set_has_image(True)
         self._update_upscale_button_state()
+
+    def _on_crop_size_changed(self, width: int, height: int):
+        """Handle crop size selection from dropdown."""
+        if not self._image_display.has_image():
+            self._status_bar.set_text("No image loaded")
+            return
+
+        self._image_display.set_crop_size(width, height)
+        self._status_bar.set_text(f"Crop mask set to {width}x{height}")
 
     def _on_state_changed(self, state: GenerationState):
         """Handle generation state change."""

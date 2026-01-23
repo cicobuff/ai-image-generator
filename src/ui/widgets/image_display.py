@@ -1517,6 +1517,57 @@ class ImageDisplay(Gtk.DrawingArea):
         # Crop and return
         return self._pil_image.crop((left, top, right, bottom))
 
+    def set_crop_size(self, width: int, height: int):
+        """Set the crop mask to a specific size.
+
+        If a mask exists, resizes it keeping the center position.
+        If no mask exists, creates a new one centered on the image.
+
+        Args:
+            width: Target width in pixels
+            height: Target height in pixels
+        """
+        if self._pil_image is None:
+            return
+
+        img_w, img_h = self._pil_image.size
+
+        if self._crop_rect is not None:
+            # Resize existing mask keeping center
+            rx, ry, rw, rh = self._crop_rect
+            center_x = rx + rw / 2
+            center_y = ry + rh / 2
+        else:
+            # Create new mask centered on image
+            center_x = img_w / 2
+            center_y = img_h / 2
+
+        # Calculate new rect position
+        new_x = center_x - width / 2
+        new_y = center_y - height / 2
+
+        # Clamp to image bounds while maintaining size if possible
+        if new_x < 0:
+            new_x = 0
+        if new_y < 0:
+            new_y = 0
+        if new_x + width > img_w:
+            new_x = max(0, img_w - width)
+        if new_y + height > img_h:
+            new_y = max(0, img_h - height)
+
+        # Final width/height (may be clamped if larger than image)
+        final_w = min(width, img_w - new_x)
+        final_h = min(height, img_h - new_y)
+
+        self._crop_rect = (new_x, new_y, final_w, final_h)
+
+        # Notify callback
+        if self._on_crop_mask_changed:
+            self._on_crop_mask_changed(True)
+
+        self.queue_draw()
+
 
 class ImageDisplayFrame(Gtk.Frame):
     """Frame containing the image display with controls."""
@@ -1652,6 +1703,10 @@ class ImageDisplayFrame(Gtk.Frame):
     def crop_image(self) -> Optional[Image.Image]:
         """Crop the current image using the crop mask."""
         return self._display.crop_image()
+
+    def set_crop_size(self, width: int, height: int):
+        """Set the crop mask to a specific size."""
+        self._display.set_crop_size(width, height)
 
     def reset_zoom(self):
         """Reset zoom to fit window."""

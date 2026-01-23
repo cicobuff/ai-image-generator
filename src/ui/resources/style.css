@@ -344,6 +344,25 @@ window {
     color: alpha(white, 0.6);
 }
 
+/* Purple dropdown style (Crop size selector) */
+dropdown.purple-button > button {
+    background: #7E57C2;
+    color: white;
+    border: none;
+}
+
+dropdown.purple-button > button:hover {
+    background: #9575CD;
+}
+
+dropdown.purple-button > button > box > label {
+    color: white;
+}
+
+dropdown.purple-button > button > box > image {
+    color: white;
+}
+
 /* Center panel in crop mode - inner purple border */
 .center-panel-crop-mode {
     box-shadow: inset 0 0 0 3px #7E57C2;

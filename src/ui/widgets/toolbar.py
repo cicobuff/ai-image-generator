@@ -8,6 +8,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk
 
 from src.core.generation_service import GenerationState
+from src.utils.constants import SIZE_PRESETS
 
 
 class InpaintTool(Enum):
@@ -52,6 +53,7 @@ class Toolbar(Gtk.Box):
         on_crop_tool_changed: Optional[Callable[["CropTool"], None]] = None,
         on_clear_crop_mask: Optional[Callable[[], None]] = None,
         on_crop_image: Optional[Callable[[], None]] = None,
+        on_crop_size_changed: Optional[Callable[[int, int], None]] = None,
     ):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self._on_load = on_load
@@ -72,6 +74,7 @@ class Toolbar(Gtk.Box):
         self._on_crop_tool_changed = on_crop_tool_changed
         self._on_clear_crop_mask = on_clear_crop_mask
         self._on_crop_image = on_crop_image
+        self._on_crop_size_changed = on_crop_size_changed
 
         self._inpaint_mode = False
         self._outpaint_mode = False
@@ -362,6 +365,18 @@ class Toolbar(Gtk.Box):
         self._crop_image_button.set_visible(False)
         self.append(self._crop_image_button)
 
+        # Crop Size selector dropdown (visible in crop mode)
+        self._crop_size_dropdown = Gtk.DropDown()
+        size_labels = ["Select Size"] + list(SIZE_PRESETS.keys())
+        string_list = Gtk.StringList.new(size_labels)
+        self._crop_size_dropdown.set_model(string_list)
+        self._crop_size_dropdown.set_selected(0)  # "Select Size"
+        self._crop_size_dropdown.add_css_class("purple-button")
+        self._crop_size_dropdown.set_tooltip_text("Set crop mask to a preset size")
+        self._crop_size_dropdown.connect("notify::selected", self._on_crop_size_selected)
+        self._crop_size_dropdown.set_visible(False)
+        self.append(self._crop_size_dropdown)
+
         # Cancel button (hidden by default)
         self._cancel_button = Gtk.Button(label="Cancel")
         self._cancel_button.add_css_class("destructive-action")
@@ -532,12 +547,35 @@ class Toolbar(Gtk.Box):
         if self._on_crop_image:
             self._on_crop_image()
 
+    def _on_crop_size_selected(self, dropdown, param):
+        """Handle crop size selection from dropdown."""
+        selected = dropdown.get_selected()
+        if selected == 0:
+            # "Select Size" placeholder - do nothing
+            return
+
+        # Get the size key (offset by 1 due to placeholder)
+        size_keys = list(SIZE_PRESETS.keys())
+        if selected <= len(size_keys):
+            size_key = size_keys[selected - 1]
+            width, height = SIZE_PRESETS[size_key]
+            if self._on_crop_size_changed:
+                self._on_crop_size_changed(width, height)
+
+            # Activate the crop mask tool so the mask can be moved/resized
+            if not self._crop_mask_button.get_active():
+                self._crop_mask_button.set_active(True)
+
+        # Reset dropdown to placeholder after selection
+        dropdown.set_selected(0)
+
     def _update_crop_ui(self):
         """Update visibility of crop-related buttons."""
         visible = self._crop_mode
         self._crop_mask_button.set_visible(visible)
         self._clear_crop_mask_button.set_visible(visible)
         self._crop_image_button.set_visible(visible)
+        self._crop_size_dropdown.set_visible(visible)
         # Disable normal generation buttons in crop mode (keep visible)
         self._generate_button.set_sensitive(not visible)
         self._img2img_button.set_sensitive(not visible)
