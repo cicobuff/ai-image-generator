@@ -80,7 +80,8 @@ class PromptSection(Gtk.Box):
 
         # Right side: Prompt Manager Panel
         self._prompt_manager = PromptManagerPanel(
-            on_words_changed=self._on_prompt_words_changed
+            on_words_changed=self._on_prompt_words_changed,
+            on_word_double_clicked=self._on_word_double_clicked,
         )
         self._prompt_manager.set_size_request(200, -1)  # Minimum width
         self._main_paned.set_end_child(self._prompt_manager)
@@ -91,6 +92,20 @@ class PromptSection(Gtk.Box):
         """Handle changes to prompt manager words."""
         # This could be used to auto-update prompts if desired
         pass
+
+    def _on_word_double_clicked(self, word: str):
+        """Handle double-click on a word - add it to positive prompt."""
+        current_text = self._positive_entry.get_text().strip()
+
+        if not current_text:
+            # Empty prompt, just add the word
+            self._positive_entry.set_text(word)
+        elif current_text.endswith(","):
+            # Already ends with comma, add space and word
+            self._positive_entry.set_text(f"{current_text} {word}")
+        else:
+            # Add comma, space, then word
+            self._positive_entry.set_text(f"{current_text}, {word}")
 
     def _on_prompts_paned_realize(self, widget):
         """Set equal sizes for prompts when paned is realized."""

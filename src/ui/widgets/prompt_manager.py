@@ -110,9 +110,14 @@ class PromptListItem(Gtk.Box):
 class PromptManagerPanel(Gtk.Box):
     """Panel for managing prompt lists and words."""
 
-    def __init__(self, on_words_changed: Optional[Callable[[], None]] = None):
+    def __init__(
+        self,
+        on_words_changed: Optional[Callable[[], None]] = None,
+        on_word_double_clicked: Optional[Callable[[str], None]] = None,
+    ):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self._on_words_changed = on_words_changed
+        self._on_word_double_clicked = on_word_double_clicked
         self._prompt_lists: dict[str, list[str]] = {}  # name -> words
         self._list_items: dict[str, PromptListItem] = {}  # name -> item widget
         self._selected_list: Optional[str] = None
@@ -371,12 +376,22 @@ class PromptManagerPanel(Gtk.Box):
         label.add_css_class("caption")
         row.append(label)
 
-        # Make clickable for selection
+        # Make clickable for selection and double-click to add to prompt
         click = Gtk.GestureClick()
-        click.connect("pressed", lambda g, n, x, y, i=index: self._on_word_clicked(i))
+        click.connect("pressed", lambda g, n, x, y, i=index, w=word: self._on_word_click_handler(i, w, n))
         row.add_controller(click)
 
         return row
+
+    def _on_word_click_handler(self, index: int, word: str, n_press: int):
+        """Handle click or double-click on word row."""
+        if n_press == 2:
+            # Double-click: add word to positive prompt
+            if self._on_word_double_clicked:
+                self._on_word_double_clicked(word)
+        else:
+            # Single click: select the word
+            self._on_word_clicked(index)
 
     def _on_word_clicked(self, index: int):
         """Handle word selection."""
