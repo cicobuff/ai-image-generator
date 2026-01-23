@@ -50,9 +50,13 @@ class ModelSelector(Gtk.Box):
 
         self.append(label)
 
-        # Dropdown
+        # Dropdown with search enabled
         self._dropdown = Gtk.DropDown()
         self._dropdown.set_hexpand(True)
+        self._dropdown.set_enable_search(True)
+        # Set expression for searching - StringList items are StringObjects with "string" property
+        expression = Gtk.PropertyExpression.new(Gtk.StringObject, None, "string")
+        self._dropdown.set_expression(expression)
         self._dropdown.connect("notify::selected", self._on_selection_changed)
         self.append(self._dropdown)
 
