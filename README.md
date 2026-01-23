@@ -2,6 +2,8 @@
 
 A GTK 4 desktop application for AI image generation using Stable Diffusion, built with Python and the Hugging Face Diffusers library. Designed for Linux with multi-GPU support.
 
+![image](docs/images/main-screen.png)
+
 ## Features
 
 ### Image Generation
