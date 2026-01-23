@@ -433,6 +433,30 @@ class Toolbar(Gtk.Box):
     def _on_inpaint_toggled(self, button):
         """Handle Inpaint Mode toggle."""
         self._inpaint_mode = button.get_active()
+
+        # Turn off other modes when this mode is activated
+        if self._inpaint_mode:
+            if self._outpaint_mode:
+                self._outpaint_toggle.handler_block_by_func(self._on_outpaint_toggled)
+                self._outpaint_toggle.set_active(False)
+                self._outpaint_toggle.handler_unblock_by_func(self._on_outpaint_toggled)
+                self._outpaint_mode = False
+                self._current_outpaint_tool = OutpaintTool.NONE
+                self._outpaint_mask_button.set_active(False)
+                self._update_outpaint_ui()
+                if self._on_outpaint_mode_changed:
+                    self._on_outpaint_mode_changed(False)
+            if self._crop_mode:
+                self._crop_toggle.handler_block_by_func(self._on_crop_toggled)
+                self._crop_toggle.set_active(False)
+                self._crop_toggle.handler_unblock_by_func(self._on_crop_toggled)
+                self._crop_mode = False
+                self._current_crop_tool = CropTool.NONE
+                self._crop_mask_button.set_active(False)
+                self._update_crop_ui()
+                if self._on_crop_mode_changed:
+                    self._on_crop_mode_changed(False)
+
         self._update_inpaint_ui()
         if self._on_inpaint_mode_changed:
             self._on_inpaint_mode_changed(self._inpaint_mode)
@@ -483,6 +507,31 @@ class Toolbar(Gtk.Box):
     def _on_outpaint_toggled(self, button):
         """Handle Outpaint Mode toggle."""
         self._outpaint_mode = button.get_active()
+
+        # Turn off other modes when this mode is activated
+        if self._outpaint_mode:
+            if self._inpaint_mode:
+                self._inpaint_toggle.handler_block_by_func(self._on_inpaint_toggled)
+                self._inpaint_toggle.set_active(False)
+                self._inpaint_toggle.handler_unblock_by_func(self._on_inpaint_toggled)
+                self._inpaint_mode = False
+                self._current_tool = InpaintTool.NONE
+                self._rect_mask_button.set_active(False)
+                self._paint_mask_button.set_active(False)
+                self._update_inpaint_ui()
+                if self._on_inpaint_mode_changed:
+                    self._on_inpaint_mode_changed(False)
+            if self._crop_mode:
+                self._crop_toggle.handler_block_by_func(self._on_crop_toggled)
+                self._crop_toggle.set_active(False)
+                self._crop_toggle.handler_unblock_by_func(self._on_crop_toggled)
+                self._crop_mode = False
+                self._current_crop_tool = CropTool.NONE
+                self._crop_mask_button.set_active(False)
+                self._update_crop_ui()
+                if self._on_crop_mode_changed:
+                    self._on_crop_mode_changed(False)
+
         self._update_outpaint_ui()
         if self._on_outpaint_mode_changed:
             self._on_outpaint_mode_changed(self._outpaint_mode)
@@ -515,6 +564,31 @@ class Toolbar(Gtk.Box):
     def _on_crop_toggled(self, button):
         """Handle Crop Mode toggle."""
         self._crop_mode = button.get_active()
+
+        # Turn off other modes when this mode is activated
+        if self._crop_mode:
+            if self._inpaint_mode:
+                self._inpaint_toggle.handler_block_by_func(self._on_inpaint_toggled)
+                self._inpaint_toggle.set_active(False)
+                self._inpaint_toggle.handler_unblock_by_func(self._on_inpaint_toggled)
+                self._inpaint_mode = False
+                self._current_tool = InpaintTool.NONE
+                self._rect_mask_button.set_active(False)
+                self._paint_mask_button.set_active(False)
+                self._update_inpaint_ui()
+                if self._on_inpaint_mode_changed:
+                    self._on_inpaint_mode_changed(False)
+            if self._outpaint_mode:
+                self._outpaint_toggle.handler_block_by_func(self._on_outpaint_toggled)
+                self._outpaint_toggle.set_active(False)
+                self._outpaint_toggle.handler_unblock_by_func(self._on_outpaint_toggled)
+                self._outpaint_mode = False
+                self._current_outpaint_tool = OutpaintTool.NONE
+                self._outpaint_mask_button.set_active(False)
+                self._update_outpaint_ui()
+                if self._on_outpaint_mode_changed:
+                    self._on_outpaint_mode_changed(False)
+
         self._update_crop_ui()
         if self._on_crop_mode_changed:
             self._on_crop_mode_changed(self._crop_mode)
