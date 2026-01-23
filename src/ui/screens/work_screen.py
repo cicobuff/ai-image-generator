@@ -23,6 +23,7 @@ from src.ui.widgets.thumbnail_gallery import ThumbnailGallery
 from src.ui.widgets.toolbar import Toolbar
 from src.ui.widgets.upscale_settings import UpscaleSettingsWidget
 from src.ui.widgets.batch_settings import BatchSettingsWidget
+from src.ui.widgets.generation_progress import GenerationProgressWidget
 from src.ui.widgets.toolbar import InpaintTool, OutpaintTool, CropTool
 from src.ui.widgets.image_display import MaskTool, OutpaintTool as ImageOutpaintTool
 from src.ui.widgets.lora_selector import LoRASelectorPanel
@@ -276,6 +277,16 @@ class WorkScreen(Gtk.Box):
             on_changed=self._on_batch_settings_changed
         )
         box.append(self._batch_widget)
+
+        # Separator
+        separator6 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        separator6.set_margin_top(6)
+        separator6.set_margin_bottom(6)
+        box.append(separator6)
+
+        # Generation progress
+        self._progress_widget = GenerationProgressWidget()
+        box.append(self._progress_widget)
 
         return container
 
@@ -622,11 +633,12 @@ class WorkScreen(Gtk.Box):
     def _on_optimization_progress(self, message: str, progress: float):
         """Handle optimization progress update."""
         self._status_bar.set_text(message)
-        self._toolbar.set_progress(message, progress)
+        self._progress_widget.set_status(message)
+        self._progress_widget.set_step_fraction(progress)
 
     def _on_optimization_complete(self, success: bool, error: str = None):
         """Handle optimization completion."""
-        self._toolbar.clear_progress()
+        self._progress_widget.reset()
         self._toolbar.set_state(GenerationState.IDLE)
 
         if success:
@@ -679,6 +691,11 @@ class WorkScreen(Gtk.Box):
         # Store whether user wanted random seed
         self._last_seed_was_random = (params.seed == -1)
 
+        # Set up progress widget for single image (0/1 at start, 1/1 when complete)
+        self._progress_widget.set_batch_progress(0, 1)
+        self._progress_widget.set_status("Starting generation...")
+        self._progress_widget.set_generating(True)
+
         # Get upscale settings
         upscale_enabled = self._upscale_widget.is_enabled
         upscale_model_path = self._upscale_widget.selected_model_path
@@ -717,6 +734,12 @@ class WorkScreen(Gtk.Box):
             gpu_indices = [0]  # Default to GPU 0
 
         self._status_bar.set_text(f"Starting batch generation: {self._batch_count} images on {len(gpu_indices)} GPU(s)...")
+
+        # Set up progress widget with per-GPU step progress bars
+        self._progress_widget.set_batch_progress(0, self._batch_count)
+        self._progress_widget.setup_gpu_progress_bars(gpu_indices)
+        self._progress_widget.set_status("Loading models...")
+        self._progress_widget.set_generating(True)
 
         # Disable batch widget and toolbar during generation
         self._batch_widget.set_sensitive_all(False)
@@ -933,14 +956,14 @@ class WorkScreen(Gtk.Box):
                             future = executor.submit(
                                 self._generate_on_gpu,
                                 backend, gen_params, output_dir, upscale_enabled, upscale_model_path,
-                                upscale_model_name, checkpoint_name, vae_name, model_type
+                                upscale_model_name, checkpoint_name, vae_name, model_type, gpu_idx
                             )
                         else:  # img2img
                             future = executor.submit(
                                 self._generate_img2img_on_gpu,
                                 backend, gen_params, self._batch_input_image, strength,
                                 output_dir, upscale_enabled, upscale_model_path,
-                                upscale_model_name, checkpoint_name, vae_name, model_type
+                                upscale_model_name, checkpoint_name, vae_name, model_type, gpu_idx
                             )
 
                         futures[future] = gpu_idx
@@ -965,6 +988,11 @@ class WorkScreen(Gtk.Box):
                                 result_path, result_image = future.result()
                                 completed += 1
 
+                                # Reset GPU step progress for this GPU (ready for next image)
+                                GLib.idle_add(
+                                    self._progress_widget.reset_gpu_step_progress, gpu_idx
+                                )
+
                                 # Update UI with result
                                 if result_path and result_image:
                                     GLib.idle_add(
@@ -974,6 +1002,10 @@ class WorkScreen(Gtk.Box):
                             except Exception as e:
                                 print(f"Generation error on GPU {gpu_idx}: {e}")
                                 completed += 1
+                                # Also reset GPU progress on error
+                                GLib.idle_add(
+                                    self._progress_widget.reset_gpu_step_progress, gpu_idx
+                                )
 
                             GLib.idle_add(
                                 self._status_bar.set_text,
@@ -994,11 +1026,15 @@ class WorkScreen(Gtk.Box):
     def _generate_on_gpu(self, backend: DiffusersBackend, params: GenerationParams,
                          output_dir: Path, upscale_enabled: bool, upscale_model_path: str,
                          upscale_model_name: str, checkpoint_name: str, vae_name: str,
-                         model_type: str):
+                         model_type: str, gpu_idx: int = 0):
         """Generate a single image on a specific GPU backend."""
         from src.utils.metadata import save_image_with_metadata, GenerationMetadata
 
-        image = backend.generate(params)
+        # Create progress callback for this GPU
+        def progress_callback(step: int, total: int):
+            GLib.idle_add(self._progress_widget.set_gpu_step_progress, gpu_idx, step, total)
+
+        image = backend.generate(params, progress_callback=progress_callback)
         if image is None:
             return None, None
 
@@ -1053,11 +1089,15 @@ class WorkScreen(Gtk.Box):
                                   input_image, strength: float, output_dir: Path,
                                   upscale_enabled: bool, upscale_model_path: str,
                                   upscale_model_name: str, checkpoint_name: str, vae_name: str,
-                                  model_type: str):
+                                  model_type: str, gpu_idx: int = 0):
         """Generate a single img2img image on a specific GPU backend."""
         from src.utils.metadata import save_image_with_metadata, GenerationMetadata
 
-        image = backend.generate_img2img(params, input_image, strength)
+        # Create progress callback for this GPU
+        def progress_callback(step: int, total: int):
+            GLib.idle_add(self._progress_widget.set_gpu_step_progress, gpu_idx, step, total)
+
+        image = backend.generate_img2img(params, input_image, strength, progress_callback=progress_callback)
         if image is None:
             return None, None
 
@@ -1121,6 +1161,10 @@ class WorkScreen(Gtk.Box):
         # Update status
         self._status_bar.set_text(f"Batch progress: {completed}/{total} - {path.name}")
 
+        # Update progress widget
+        self._progress_widget.set_batch_progress(completed, total)
+        self._progress_widget.set_status(f"Completed {completed}/{total}")
+
         # Update toolbar
         self._toolbar.set_has_image(True)
         self._update_upscale_button_state()
@@ -1128,7 +1172,8 @@ class WorkScreen(Gtk.Box):
     def _on_batch_compile_progress(self, message: str, progress: float):
         """Handle compilation progress during batch setup (called on main thread)."""
         self._status_bar.set_text(message)
-        self._toolbar.set_progress(message, progress)
+        self._progress_widget.set_status(message)
+        self._progress_widget.set_step_fraction(progress)
 
     def _cleanup_gpu_backends(self):
         """Clean up GPU backend instances."""
@@ -1166,6 +1211,10 @@ class WorkScreen(Gtk.Box):
         # Re-enable batch widget and toolbar
         self._batch_widget.set_sensitive_all(True)
         self._toolbar.set_state(GenerationState.IDLE)
+
+        # Reset progress widget
+        self._progress_widget.reset()
+        self._progress_widget.set_generating(False)
 
         self._status_bar.set_text(f"Batch generation complete: {count} images generated")
 
@@ -1210,6 +1259,11 @@ class WorkScreen(Gtk.Box):
 
         # Store whether user wanted random seed
         self._last_seed_was_random = (params.seed == -1)
+
+        # Set up progress widget for single image (0/1 at start, 1/1 when complete)
+        self._progress_widget.set_batch_progress(0, 1)
+        self._progress_widget.set_status("Starting img2img...")
+        self._progress_widget.set_generating(True)
 
         # Get upscale settings
         upscale_enabled = self._upscale_widget.is_enabled
@@ -1331,6 +1385,11 @@ class WorkScreen(Gtk.Box):
         # Store whether user wanted random seed
         self._last_seed_was_random = (params.seed == -1)
 
+        # Set up progress widget for single image (0/1 at start, 1/1 when complete)
+        self._progress_widget.set_batch_progress(0, 1)
+        self._progress_widget.set_status("Starting inpaint...")
+        self._progress_widget.set_generating(True)
+
         # Get upscale settings
         upscale_enabled = self._upscale_widget.is_enabled
         upscale_model_path = self._upscale_widget.selected_model_path
@@ -1428,6 +1487,11 @@ class WorkScreen(Gtk.Box):
 
         # Store whether user wanted random seed
         self._last_seed_was_random = (params.seed == -1)
+
+        # Set up progress widget for single image (0/1 at start, 1/1 when complete)
+        self._progress_widget.set_batch_progress(0, 1)
+        self._progress_widget.set_status("Starting outpaint...")
+        self._progress_widget.set_generating(True)
 
         # Get upscale settings
         upscale_enabled = self._upscale_widget.is_enabled
@@ -1598,18 +1662,25 @@ class WorkScreen(Gtk.Box):
 
     def _on_progress(self, message: str, progress: float):
         """Handle progress update."""
-        self._toolbar.set_progress(message, progress)
         self._status_bar.set_text(message)
+        self._progress_widget.set_status(message)
+        self._progress_widget.set_step_fraction(progress)
 
     def _on_step_progress(self, step: int, total: int):
         """Handle step progress update."""
-        self._toolbar.set_step_progress(step, total)
+        self._progress_widget.set_step_progress(step, total)
+        self._progress_widget.set_status(f"Step {step}/{total}")
 
     def _on_generation_complete(self, result: GenerationResult):
         """Handle generation completion (for single-image generation via generation_service)."""
-        self._toolbar.clear_progress()
+        # Update progress to show completion
+        self._progress_widget.set_batch_progress(1, 1)
+        self._progress_widget.set_step_fraction(1.0)
+        self._progress_widget.set_generating(False)
 
         if result.success and result.image:
+            self._progress_widget.set_status("Complete")
+
             # In inpaint mode, we want to keep the mask and show the result
             # The user can continue to refine with the same mask
             in_inpaint_mode = self._image_display.inpaint_mode
@@ -1643,6 +1714,7 @@ class WorkScreen(Gtk.Box):
         else:
             error_msg = f"Generation failed: {result.error or 'Unknown error'}"
             self._status_bar.set_text(error_msg)
+            self._progress_widget.set_status("Failed")
 
     def _on_thumbnail_selected(self, path: Path):
         """Handle thumbnail selection."""
@@ -1795,16 +1867,21 @@ class WorkScreen(Gtk.Box):
         upscale_model_name = self._upscale_widget.selected_model_name
         self._status_bar.set_text(f"Upscaling with {upscale_model_name}...")
 
+        def update_upscale_progress(msg, prog):
+            """Helper to update progress widget."""
+            self._progress_widget.set_status(msg)
+            self._progress_widget.set_step_fraction(prog)
+
         # Run upscaling in background thread
         def upscale_thread():
             try:
                 # Load the upscale model if not already loaded or different model
                 if upscale_backend._loaded_model_path != upscale_model_path:
-                    GLib.idle_add(lambda: self._toolbar.set_progress("Loading upscale model...", 0.1))
+                    GLib.idle_add(lambda: update_upscale_progress("Loading upscale model...", 0.1))
                     success = upscale_backend.load_model(
                         upscale_model_path,
                         progress_callback=lambda msg, prog: GLib.idle_add(
-                            lambda m=msg, p=prog: self._toolbar.set_progress(m, p)
+                            lambda m=msg, p=prog: update_upscale_progress(m, p)
                         )
                     )
                     if not success:
@@ -1812,11 +1889,11 @@ class WorkScreen(Gtk.Box):
                         return
 
                 # Perform upscaling
-                GLib.idle_add(lambda: self._toolbar.set_progress("Upscaling image...", 0.5))
+                GLib.idle_add(lambda: update_upscale_progress("Upscaling image...", 0.5))
                 upscaled_image = upscale_backend.upscale(
                     current_image,
                     progress_callback=lambda msg, prog: GLib.idle_add(
-                        lambda m=msg, p=prog: self._toolbar.set_progress(m, 0.5 + prog * 0.4)
+                        lambda m=msg, p=prog: update_upscale_progress(m, 0.5 + prog * 0.4)
                     )
                 )
 
@@ -1831,6 +1908,7 @@ class WorkScreen(Gtk.Box):
                     filename = f"upscaled_{timestamp}.png"
                     output_path = output_dir / filename
 
+                    GLib.idle_add(lambda: update_upscale_progress("Saving image...", 0.95))
                     upscaled_image.save(output_path, "PNG")
                     GLib.idle_add(lambda: self._on_upscale_complete(upscaled_image, None, output_path))
                 else:
@@ -1844,7 +1922,9 @@ class WorkScreen(Gtk.Box):
 
         # Set UI to generating state
         self._toolbar.set_state(GenerationState.GENERATING)
-        self._toolbar.set_progress("Starting upscale...", 0.0)
+        self._progress_widget.set_batch_progress(1, 1)
+        self._progress_widget.set_status("Starting upscale...")
+        self._progress_widget.set_generating(True)
 
         thread = threading.Thread(target=upscale_thread, daemon=True)
         thread.start()
@@ -1852,7 +1932,8 @@ class WorkScreen(Gtk.Box):
     def _on_upscale_complete(self, image, error, path=None):
         """Handle upscale completion (called from main thread)."""
         self._toolbar.set_state(GenerationState.IDLE)
-        self._toolbar.clear_progress()
+        self._progress_widget.reset()
+        self._progress_widget.set_generating(False)
 
         if image and not error:
             # Display the upscaled image

@@ -405,17 +405,6 @@ class Toolbar(Gtk.Box):
         spacer.set_hexpand(True)
         self.append(spacer)
 
-        # Progress label
-        self._progress_label = Gtk.Label(label="")
-        self._progress_label.add_css_class("dim-label")
-        self.append(self._progress_label)
-
-        # Progress bar
-        self._progress_bar = Gtk.ProgressBar()
-        self._progress_bar.set_size_request(200, -1)
-        self._progress_bar.set_visible(False)
-        self.append(self._progress_bar)
-
     def _on_load_clicked(self, button):
         """Handle Load button click."""
         if self._on_load:
@@ -710,7 +699,6 @@ class Toolbar(Gtk.Box):
             # Restore generation button sensitivity
             self._update_generation_buttons_sensitivity()
             self._cancel_button.set_visible(False)
-            self._progress_bar.set_visible(False)
             # Restore inpaint controls sensitivity (based on image presence, not model loaded)
             self._inpaint_toggle.set_sensitive(self._has_image)
             self._rect_mask_button.set_sensitive(True)
@@ -763,7 +751,6 @@ class Toolbar(Gtk.Box):
             self._img2img_button.set_visible(True)
             self._upscale_button.set_sensitive(False)
             self._cancel_button.set_visible(False)
-            self._progress_bar.set_visible(True)
 
         elif state == GenerationState.GENERATING:
             self._load_button.set_sensitive(False)
@@ -786,7 +773,6 @@ class Toolbar(Gtk.Box):
             self._crop_image_button.set_sensitive(False)
             self._remove_with_mask_button.set_sensitive(False)
             self._cancel_button.set_visible(True)
-            self._progress_bar.set_visible(True)
 
         elif state == GenerationState.CANCELLING:
             self._load_button.set_sensitive(False)
@@ -798,7 +784,6 @@ class Toolbar(Gtk.Box):
             self._outpaint_toggle.set_sensitive(False)
             self._crop_toggle.set_sensitive(False)
             self._cancel_button.set_sensitive(False)
-            self._progress_bar.set_visible(True)
 
     def set_model_loaded(self, loaded: bool):
         """Update state based on whether a model is loaded."""
@@ -899,22 +884,16 @@ class Toolbar(Gtk.Box):
             self._crop_toggle.set_active(False)
 
     def set_progress(self, message: str, fraction: float):
-        """Update progress display."""
-        self._progress_label.set_text(message)
-        self._progress_bar.set_fraction(fraction)
+        """Update progress display (deprecated - use GenerationProgressWidget)."""
+        pass
 
     def set_step_progress(self, step: int, total: int):
-        """Update step progress."""
-        if total > 0:
-            fraction = step / total
-            self._progress_bar.set_fraction(fraction)
-            self._progress_label.set_text(f"Step {step}/{total}")
+        """Update step progress (deprecated - use GenerationProgressWidget)."""
+        pass
 
     def clear_progress(self):
-        """Clear progress display."""
-        self._progress_label.set_text("")
-        self._progress_bar.set_fraction(0)
-        self._progress_bar.set_visible(False)
+        """Clear progress display (deprecated - use GenerationProgressWidget)."""
+        pass
 
     def set_upscale_enabled(self, enabled: bool, has_image: bool = True):
         """Update upscale button sensitivity based on upscaling enabled state and image presence."""

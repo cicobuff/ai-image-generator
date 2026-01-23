@@ -200,6 +200,17 @@ SECTION_INFO = {
         "Each word should be a tag or short phrase\n"
         "(e.g., 'masterpiece', 'best quality', '8k resolution')"
     ),
+    "generation_progress": (
+        "Generation Progress\n\n"
+        "Shows the current generation status:\n"
+        "• Batch: Overall progress for batch generation\n"
+        "• Step: Current image progress (steps, VAE, saving)\n"
+        "• Step (GPUn): Per-GPU step progress in batch mode\n"
+        "• Status: What's currently happening\n\n"
+        "Batch progress shows 1/1 for single image generation.\n"
+        "In batch mode with multiple GPUs, each GPU shows its own\n"
+        "step progress bar."
+    ),
 }
 
 # Label tooltips
