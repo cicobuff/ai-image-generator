@@ -440,6 +440,12 @@ dropdown.purple-button > button > box > image {
     border-color: @theme_selected_bg_color;
 }
 
+/* Placeholder for lazy-loaded thumbnails */
+.thumbnail-placeholder {
+    background-color: #2a2a2a;
+    border-radius: 4px;
+}
+
 /* Image display */
 .image-display {
     background-color: #1a1a1a;

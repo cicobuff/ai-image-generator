@@ -1,9 +1,11 @@
-"""Thumbnail gallery widget for displaying generated images."""
+"""Thumbnail gallery widget for displaying generated images with lazy loading."""
 
 from pathlib import Path
-from typing import Optional, Callable, List
+from typing import Optional, Callable, List, Set
 from enum import Enum
 import io
+import threading
+import queue
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -22,7 +24,7 @@ class SortOrder(Enum):
 
 
 class ThumbnailItem(Gtk.Button):
-    """Single thumbnail item in the gallery."""
+    """Single thumbnail item in the gallery with lazy loading support."""
 
     def __init__(
         self,
@@ -30,47 +32,64 @@ class ThumbnailItem(Gtk.Button):
         thumbnail_size: int = THUMBNAIL_SIZE,
         image: Optional[Image.Image] = None,
         on_click: Optional[Callable[[Path], None]] = None,
+        placeholder: bool = False,
     ):
         super().__init__()
         self._path = path
         self._on_click = on_click
         self._thumbnail_size = thumbnail_size
         self._original_image = image
+        self._is_loaded = False
+        self._pixbuf: Optional[GdkPixbuf.Pixbuf] = None
 
         self.add_css_class("thumbnail")
         self.set_has_frame(False)
 
-        self._build_ui(image)
+        if placeholder:
+            self._build_placeholder()
+        else:
+            self._build_ui(image)
 
         self.connect("clicked", self._on_clicked)
 
+    def _build_placeholder(self):
+        """Build a placeholder thumbnail (blank/loading state)."""
+        # Create a simple placeholder box
+        placeholder = Gtk.Box()
+        placeholder.set_size_request(self._thumbnail_size, self._thumbnail_size)
+        placeholder.add_css_class("thumbnail-placeholder")
+        self.set_child(placeholder)
+        self._is_loaded = False
+
     def _build_ui(self, image: Optional[Image.Image]):
-        """Build the thumbnail UI."""
+        """Build the thumbnail UI with actual image."""
         # Create thumbnail image
         if image:
-            pixbuf = self._pil_to_thumbnail(image)
+            self._pixbuf = self._pil_to_thumbnail(image)
         else:
             # Load from path
             try:
-                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                self._pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
                     str(self._path),
                     self._thumbnail_size,
                     self._thumbnail_size,
                     True,  # Preserve aspect ratio
                 )
             except Exception:
-                pixbuf = None
+                self._pixbuf = None
 
-        if pixbuf:
-            picture = Gtk.Picture.new_for_pixbuf(pixbuf)
+        if self._pixbuf:
+            picture = Gtk.Picture.new_for_pixbuf(self._pixbuf)
             picture.set_content_fit(Gtk.ContentFit.CONTAIN)
             picture.set_size_request(self._thumbnail_size, self._thumbnail_size)
             self.set_child(picture)
+            self._is_loaded = True
         else:
-            # Placeholder
+            # Error placeholder
             label = Gtk.Label(label="?")
             label.set_size_request(self._thumbnail_size, self._thumbnail_size)
             self.set_child(label)
+            self._is_loaded = True
 
     def _pil_to_thumbnail(self, image: Image.Image) -> Optional[GdkPixbuf.Pixbuf]:
         """Convert PIL Image to thumbnail GdkPixbuf."""
@@ -94,6 +113,28 @@ class ThumbnailItem(Gtk.Button):
             print(f"Error creating thumbnail: {e}")
             return None
 
+    def load_thumbnail(self) -> bool:
+        """Load the actual thumbnail image. Returns True if loading was needed."""
+        if self._is_loaded:
+            return False
+
+        self._build_ui(self._original_image)
+        return True
+
+    def load_thumbnail_from_pixbuf(self, pixbuf: GdkPixbuf.Pixbuf):
+        """Set the thumbnail from a pre-loaded pixbuf."""
+        self._pixbuf = pixbuf
+        picture = Gtk.Picture.new_for_pixbuf(pixbuf)
+        picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+        picture.set_size_request(self._thumbnail_size, self._thumbnail_size)
+        self.set_child(picture)
+        self._is_loaded = True
+
+    @property
+    def is_loaded(self) -> bool:
+        """Check if the thumbnail is loaded."""
+        return self._is_loaded
+
     def _on_clicked(self, button):
         """Handle thumbnail click."""
         if self._on_click:
@@ -114,16 +155,19 @@ class ThumbnailItem(Gtk.Button):
     def update_size(self, new_size: int):
         """Update the thumbnail size."""
         self._thumbnail_size = new_size
-        # Rebuild the UI with new size
-        self._build_ui(self._original_image)
+        self._is_loaded = False
+        # Rebuild as placeholder, will be reloaded
+        self._build_placeholder()
 
 
 class ThumbnailGallery(Gtk.Box):
-    """Scrollable gallery of image thumbnails with toolbar and directory selector."""
+    """Scrollable gallery of image thumbnails with lazy loading."""
 
     MIN_THUMBNAIL_SIZE = 64
     MAX_THUMBNAIL_SIZE = 256
     DEFAULT_THUMBNAIL_SIZE = THUMBNAIL_SIZE
+    INITIAL_VISIBLE_COUNT = 20  # Number of thumbnails to load immediately
+    BATCH_LOAD_SIZE = 10  # Number of thumbnails to load per batch in background
 
     def __init__(
         self,
@@ -143,6 +187,12 @@ class ThumbnailGallery(Gtk.Box):
         self._base_directory: Optional[Path] = None  # Root output directory
         self._current_directory: Optional[Path] = None  # Currently selected subdirectory
         self._subdirectories: List[str] = []  # List of subdirectory names
+
+        # Background loading state
+        self._load_queue: queue.Queue = queue.Queue()
+        self._loading_thread: Optional[threading.Thread] = None
+        self._stop_loading = threading.Event()
+        self._loaded_indices: Set[int] = set()
 
         self.add_css_class("thumbnail-gallery")
         self._build_ui()
@@ -221,11 +271,11 @@ class ThumbnailGallery(Gtk.Box):
         controls_row.append(self._size_scale)
 
         # Scrolled window
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scrolled.set_vexpand(True)
-        scrolled.set_margin_top(4)
-        self.append(scrolled)
+        self._scrolled = Gtk.ScrolledWindow()
+        self._scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self._scrolled.set_vexpand(True)
+        self._scrolled.set_margin_top(4)
+        self.append(self._scrolled)
 
         # Flow box for thumbnails
         self._flowbox = Gtk.FlowBox()
@@ -236,7 +286,7 @@ class ThumbnailGallery(Gtk.Box):
         self._flowbox.set_homogeneous(True)
         self._flowbox.set_row_spacing(4)
         self._flowbox.set_column_spacing(4)
-        scrolled.set_child(self._flowbox)
+        self._scrolled.set_child(self._flowbox)
 
     def _setup_key_controller(self):
         """Set up keyboard controller for Delete key."""
@@ -253,12 +303,90 @@ class ThumbnailGallery(Gtk.Box):
             return True
         return False
 
-    def delete_selected(self) -> bool:
-        """Delete the currently selected image.
+    def _stop_background_loading(self):
+        """Stop any running background loading."""
+        self._stop_loading.set()
+        if self._loading_thread is not None and self._loading_thread.is_alive():
+            self._loading_thread.join(timeout=0.5)
+        self._loading_thread = None
+        # Clear the queue
+        while not self._load_queue.empty():
+            try:
+                self._load_queue.get_nowait()
+            except queue.Empty:
+                break
 
-        Returns:
-            True if an image was deleted, False otherwise.
-        """
+    def _start_background_loading(self, start_index: int):
+        """Start background loading from the given index."""
+        self._stop_loading.clear()
+
+        # Queue up indices to load
+        for i in range(start_index, len(self._thumbnails)):
+            if i not in self._loaded_indices:
+                self._load_queue.put(i)
+
+        # Start loading thread
+        self._loading_thread = threading.Thread(
+            target=self._background_load_worker,
+            daemon=True
+        )
+        self._loading_thread.start()
+
+    def _background_load_worker(self):
+        """Background thread worker for loading thumbnails."""
+        while not self._stop_loading.is_set():
+            try:
+                index = self._load_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            if self._stop_loading.is_set():
+                break
+
+            if index >= len(self._thumbnails) or index in self._loaded_indices:
+                continue
+
+            # Load the thumbnail in background
+            try:
+                thumb = self._thumbnails[index]
+                path = thumb.path
+
+                # Load and scale the image
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                    str(path),
+                    self._thumbnail_size,
+                    self._thumbnail_size,
+                    True,
+                )
+
+                if self._stop_loading.is_set():
+                    break
+
+                # Schedule UI update on main thread
+                GLib.idle_add(self._update_thumbnail_ui, index, pixbuf)
+                self._loaded_indices.add(index)
+
+            except Exception as e:
+                # Mark as loaded even on error to prevent retry loops
+                self._loaded_indices.add(index)
+
+        # Clear remaining queue items
+        while not self._load_queue.empty():
+            try:
+                self._load_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def _update_thumbnail_ui(self, index: int, pixbuf: GdkPixbuf.Pixbuf) -> bool:
+        """Update thumbnail UI on main thread. Returns False to remove from idle."""
+        if index < len(self._thumbnails):
+            thumb = self._thumbnails[index]
+            if not thumb.is_loaded:
+                thumb.load_thumbnail_from_pixbuf(pixbuf)
+        return False
+
+    def delete_selected(self) -> bool:
+        """Delete the currently selected image."""
         if self._selected_path is None:
             return False
 
@@ -285,6 +413,16 @@ class ThumbnailGallery(Gtk.Box):
             if path_to_delete in self._image_paths:
                 self._image_paths.remove(path_to_delete)
 
+            # Remove from loaded indices (shift all indices after this one)
+            self._loaded_indices.discard(thumbnail_index)
+            new_loaded = set()
+            for idx in self._loaded_indices:
+                if idx > thumbnail_index:
+                    new_loaded.add(idx - 1)
+                else:
+                    new_loaded.add(idx)
+            self._loaded_indices = new_loaded
+
             # Remove thumbnail widget
             self._flowbox.remove(thumbnail_to_remove)
             self._thumbnails.remove(thumbnail_to_remove)
@@ -292,14 +430,13 @@ class ThumbnailGallery(Gtk.Box):
             # Select next image if available
             self._selected_path = None
             if self._thumbnails:
-                # Try to select the next image, or the previous if we deleted the last one
                 next_index = min(thumbnail_index, len(self._thumbnails) - 1)
                 if next_index >= 0:
                     next_thumb = self._thumbnails[next_index]
                     next_thumb.set_selected(True)
                     self._selected_path = next_thumb.path
 
-            # Notify callback that image was deleted
+            # Notify callback
             if self._on_image_deleted:
                 self._on_image_deleted(path_to_delete)
 
@@ -315,49 +452,38 @@ class ThumbnailGallery(Gtk.Box):
         if self._base_directory is None or not self._base_directory.exists():
             return
 
-        # Get all subdirectories
         for item in self._base_directory.iterdir():
             if item.is_dir():
                 self._subdirectories.append(item.name)
 
-        # Sort alphabetically
         self._subdirectories.sort()
 
     def _update_directory_combo(self):
-        """Update the directory combo box with current subdirectories."""
-        # Block signal while updating
+        """Update the directory combo box."""
         self._dir_combo.handler_block_by_func(self._on_directory_combo_changed)
 
-        # Clear existing items
         self._dir_combo.remove_all()
-
-        # Add root directory option (empty string means root)
         self._dir_combo.append_text("(root)")
 
-        # Add subdirectories
         for subdir in self._subdirectories:
             self._dir_combo.append_text(subdir)
 
-        # Set active based on current directory
         if self._current_directory == self._base_directory:
             self._dir_combo.set_active(0)
         else:
-            # Find the subdirectory in the list
             rel_path = self._get_relative_subdir()
             if rel_path in self._subdirectories:
-                idx = self._subdirectories.index(rel_path) + 1  # +1 for (root)
+                idx = self._subdirectories.index(rel_path) + 1
                 self._dir_combo.set_active(idx)
             else:
-                # Custom typed directory - set text in entry
                 entry = self._dir_combo.get_child()
                 if entry and rel_path:
                     entry.set_text(rel_path)
 
-        # Unblock signal
         self._dir_combo.handler_unblock_by_func(self._on_directory_combo_changed)
 
     def _get_relative_subdir(self) -> str:
-        """Get the relative subdirectory name from current directory."""
+        """Get the relative subdirectory name."""
         if self._current_directory is None or self._base_directory is None:
             return ""
         if self._current_directory == self._base_directory:
@@ -373,17 +499,13 @@ class ThumbnailGallery(Gtk.Box):
         if self._base_directory is None:
             return
 
-        # Get the selected/typed text
         active_idx = combo.get_active()
         if active_idx == 0:
-            # Root directory selected
             new_dir = self._base_directory
         elif active_idx > 0:
-            # Existing subdirectory selected
             subdir_name = self._subdirectories[active_idx - 1]
             new_dir = self._base_directory / subdir_name
         else:
-            # Custom text typed
             entry = combo.get_child()
             if entry:
                 text = entry.get_text().strip()
@@ -394,19 +516,15 @@ class ThumbnailGallery(Gtk.Box):
             else:
                 new_dir = self._base_directory
 
-        # Update current directory
         if new_dir != self._current_directory:
             self._current_directory = new_dir
 
-            # Notify callback
             if self._on_directory_changed:
                 self._on_directory_changed(new_dir)
 
-            # Refresh thumbnails if directory exists
             if new_dir.exists():
                 self._load_thumbnails_from_current_directory()
             else:
-                # Directory doesn't exist - clear thumbnails
                 self._clear_thumbnails()
 
     def _on_refresh_directories(self, button):
@@ -416,7 +534,6 @@ class ThumbnailGallery(Gtk.Box):
 
     def _on_sort_clicked(self, button):
         """Handle sort button click."""
-        # Toggle sort order
         if self._sort_order == SortOrder.DATE_DESC:
             self._sort_order = SortOrder.DATE_ASC
             self._sort_button.set_icon_name("view-sort-ascending-symbolic")
@@ -426,7 +543,6 @@ class ThumbnailGallery(Gtk.Box):
             self._sort_button.set_icon_name("view-sort-descending-symbolic")
             self._sort_button.set_tooltip_text("Sort: Newest first (click to change)")
 
-        # Re-sort and refresh
         self._refresh_thumbnails()
 
     def _on_size_changed(self, scale):
@@ -438,21 +554,25 @@ class ThumbnailGallery(Gtk.Box):
         self._thumbnail_size = new_size
         self._size_scale.set_tooltip_text(f"Thumbnail size: {new_size}px")
 
-        # Refresh thumbnails with new size
         self._refresh_thumbnails()
 
     def _clear_thumbnails(self):
-        """Clear all thumbnail widgets without clearing paths."""
+        """Clear all thumbnail widgets."""
+        self._stop_background_loading()
         for thumb in self._thumbnails:
             self._flowbox.remove(thumb)
         self._thumbnails.clear()
         self._image_paths.clear()
         self._selected_path = None
+        self._loaded_indices.clear()
 
     def _refresh_thumbnails(self):
         """Refresh all thumbnails with current settings."""
         if not self._image_paths:
             return
+
+        # Stop any background loading
+        self._stop_background_loading()
 
         # Store selected path
         selected = self._selected_path
@@ -461,17 +581,34 @@ class ThumbnailGallery(Gtk.Box):
         for thumb in self._thumbnails:
             self._flowbox.remove(thumb)
         self._thumbnails.clear()
+        self._loaded_indices.clear()
 
         # Sort paths
         sorted_paths = self._sort_paths(self._image_paths)
 
-        # Recreate thumbnails
-        for path in sorted_paths:
-            thumbnail = ThumbnailItem(
-                path=path,
-                thumbnail_size=self._thumbnail_size,
-                on_click=self._on_thumbnail_clicked,
-            )
+        # Determine how many to load immediately
+        initial_count = min(self.INITIAL_VISIBLE_COUNT, len(sorted_paths))
+
+        # Create all thumbnails - first batch loaded, rest as placeholders
+        for i, path in enumerate(sorted_paths):
+            if i < initial_count:
+                # Load immediately
+                thumbnail = ThumbnailItem(
+                    path=path,
+                    thumbnail_size=self._thumbnail_size,
+                    on_click=self._on_thumbnail_clicked,
+                    placeholder=False,
+                )
+                self._loaded_indices.add(i)
+            else:
+                # Create as placeholder
+                thumbnail = ThumbnailItem(
+                    path=path,
+                    thumbnail_size=self._thumbnail_size,
+                    on_click=self._on_thumbnail_clicked,
+                    placeholder=True,
+                )
+
             self._thumbnails.append(thumbnail)
             self._flowbox.append(thumbnail)
 
@@ -480,22 +617,25 @@ class ThumbnailGallery(Gtk.Box):
             for thumb in self._thumbnails:
                 thumb.set_selected(thumb.path == selected)
 
+        # Start background loading for the rest
+        if initial_count < len(sorted_paths):
+            self._start_background_loading(initial_count)
+
     def _sort_paths(self, paths: List[Path]) -> List[Path]:
         """Sort paths according to current sort order."""
         reverse = self._sort_order == SortOrder.DATE_DESC
         return sorted(paths, key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=reverse)
 
     def _load_thumbnails_from_current_directory(self):
-        """Load thumbnails from the current directory (not subdirectories)."""
+        """Load thumbnails from the current directory with lazy loading."""
         self._clear_thumbnails()
 
         if self._current_directory is None or not self._current_directory.exists():
             return
 
-        # Get image files (only in current directory, not subdirectories)
+        # Get image files (only in current directory)
         image_files = []
         for ext in (".png", ".jpg", ".jpeg", ".webp"):
-            # Use iterdir to avoid recursion into subdirectories
             for item in self._current_directory.iterdir():
                 if item.is_file() and item.suffix.lower() == ext:
                     image_files.append(item)
@@ -506,49 +646,70 @@ class ThumbnailGallery(Gtk.Box):
         # Sort according to current order
         sorted_files = self._sort_paths(image_files)
 
-        # Add thumbnails
-        for path in sorted_files:
-            thumbnail = ThumbnailItem(
-                path=path,
-                thumbnail_size=self._thumbnail_size,
-                on_click=self._on_thumbnail_clicked,
-            )
+        # Determine how many to load immediately
+        initial_count = min(self.INITIAL_VISIBLE_COUNT, len(sorted_files))
+
+        # Create thumbnails - first batch loaded, rest as placeholders
+        for i, path in enumerate(sorted_files):
+            if i < initial_count:
+                # Load immediately for visible area
+                thumbnail = ThumbnailItem(
+                    path=path,
+                    thumbnail_size=self._thumbnail_size,
+                    on_click=self._on_thumbnail_clicked,
+                    placeholder=False,
+                )
+                self._loaded_indices.add(i)
+            else:
+                # Create placeholder for background loading
+                thumbnail = ThumbnailItem(
+                    path=path,
+                    thumbnail_size=self._thumbnail_size,
+                    on_click=self._on_thumbnail_clicked,
+                    placeholder=True,
+                )
+
             self._thumbnails.append(thumbnail)
             self._flowbox.append(thumbnail)
 
+        # Start background loading for remaining thumbnails
+        if initial_count < len(sorted_files):
+            self._start_background_loading(initial_count)
+
     def add_image(self, path: Path, image: Optional[Image.Image] = None):
         """Add a new image to the gallery."""
-        # Only add if the image is in the current directory
         if self._current_directory and path.parent == self._current_directory:
-            # Add to paths list
             if path not in self._image_paths:
                 self._image_paths.append(path)
 
+            # New images are always loaded immediately (not placeholders)
             thumbnail = ThumbnailItem(
                 path=path,
                 thumbnail_size=self._thumbnail_size,
                 image=image,
                 on_click=self._on_thumbnail_clicked,
+                placeholder=False,
             )
 
-            # Insert based on sort order
             if self._sort_order == SortOrder.DATE_DESC:
-                # Newest first - prepend
                 self._thumbnails.insert(0, thumbnail)
                 self._flowbox.prepend(thumbnail)
+                # Shift loaded indices
+                new_loaded = {0}
+                for idx in self._loaded_indices:
+                    new_loaded.add(idx + 1)
+                self._loaded_indices = new_loaded
             else:
-                # Oldest first - append
                 self._thumbnails.append(thumbnail)
                 self._flowbox.append(thumbnail)
+                self._loaded_indices.add(len(self._thumbnails) - 1)
 
     def _on_thumbnail_clicked(self, path: Path):
         """Handle thumbnail click."""
-        # Update selection state
         self._selected_path = path
         for thumb in self._thumbnails:
             thumb.set_selected(thumb.path == path)
 
-        # Notify callback
         if self._on_image_selected:
             self._on_image_selected(path)
 
@@ -561,15 +722,11 @@ class ThumbnailGallery(Gtk.Box):
         self._base_directory = directory
         self._current_directory = directory
 
-        # Ensure directory exists
         if not directory.exists():
             directory.mkdir(parents=True, exist_ok=True)
 
-        # Scan for subdirectories
         self._scan_subdirectories()
         self._update_directory_combo()
-
-        # Load thumbnails from root
         self._load_thumbnails_from_current_directory()
 
     def get_selected_path(self) -> Optional[Path]:
@@ -581,12 +738,11 @@ class ThumbnailGallery(Gtk.Box):
         self._on_thumbnail_clicked(path)
 
     def get_output_directory(self) -> Path:
-        """Get the current output directory for saving new images."""
+        """Get the current output directory."""
         if self._current_directory is not None:
             return self._current_directory
         if self._base_directory is not None:
             return self._base_directory
-        # Fallback
         from src.core.config import config_manager
         return config_manager.config.get_output_path()
 
@@ -602,7 +758,6 @@ class ThumbnailGallery(Gtk.Box):
 
         self._current_directory = new_dir
 
-        # Update combo box
         entry = self._dir_combo.get_child()
         if entry:
             if subdir_name and subdir_name != "(root)":
@@ -610,11 +765,9 @@ class ThumbnailGallery(Gtk.Box):
             else:
                 self._dir_combo.set_active(0)
 
-        # Notify callback
         if self._on_directory_changed:
             self._on_directory_changed(new_dir)
 
-        # Refresh thumbnails if directory exists
         if new_dir.exists():
             self._load_thumbnails_from_current_directory()
         else:
