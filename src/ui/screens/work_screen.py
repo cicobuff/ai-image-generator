@@ -17,7 +17,7 @@ from src.backends.diffusers_backend import diffusers_backend, DiffusersBackend, 
 from src.ui.widgets.model_selector import ModelSelector
 from src.ui.widgets.vram_display import VRAMDisplay
 from src.ui.widgets.generation_params import GenerationParamsWidget
-from src.ui.widgets.prompt_entry import PromptPanel
+from src.ui.widgets.prompt_section import PromptSection
 from src.ui.widgets.image_display import ImageDisplayFrame
 from src.ui.widgets.thumbnail_gallery import ThumbnailGallery
 from src.ui.widgets.toolbar import Toolbar
@@ -256,15 +256,28 @@ class WorkScreen(Gtk.Box):
         self._center_paned.set_resize_start_child(True)
         self._center_paned.set_shrink_start_child(True)
 
-        # Prompts (bottom)
-        self._prompt_panel = PromptPanel()
-        self._prompt_panel.set_size_request(-1, 100)  # Minimum height
-        self._center_paned.set_end_child(self._prompt_panel)
+        # Prompt section (bottom) - contains prompt manager + prompts
+        self._prompt_section = PromptSection()
+        self._prompt_section.set_size_request(-1, 150)  # Minimum height
+        self._center_paned.set_end_child(self._prompt_section)
         self._center_paned.set_resize_end_child(True)
         self._center_paned.set_shrink_end_child(True)
 
         # Restore center panel position from config
         self._center_paned.set_position(config_manager.config.window.center_panel_height)
+
+        # Restore prompt section positions from config
+        window_config = config_manager.config.window
+        if window_config.prompt_section_width > 0:
+            self._prompt_section.set_paned_positions({
+                "prompts_width": window_config.prompt_section_width,
+            })
+        if window_config.prompt_section_split > 0:
+            self._prompt_section.set_paned_positions({
+                "prompts_split": window_config.prompt_section_split,
+            })
+        if window_config.prompt_manager_split > 0:
+            self._prompt_section.prompt_manager.set_paned_position(window_config.prompt_manager_split)
 
         return self._center_paned
 
@@ -397,7 +410,7 @@ class WorkScreen(Gtk.Box):
             self._update_upscale_button_state()
 
             # Clear prompts to defaults
-            self._prompt_panel.set_prompts("", "")
+            self._prompt_section.set_prompts("", "")
             self._params_widget.reset_to_defaults()
 
             self._status_bar.set_text(f"Deleted: {path.name}")
@@ -572,7 +585,7 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please select a checkpoint first")
             return
 
-        positive = self._prompt_panel.get_positive_prompt()
+        positive = self._prompt_section.get_positive_prompt()
         if not positive.strip():
             self._status_bar.set_text("Please enter a positive prompt")
             return
@@ -591,8 +604,8 @@ class WorkScreen(Gtk.Box):
 
     def _do_generate(self):
         """Perform the actual generation (called after models are loaded, single image only)."""
-        positive = self._prompt_panel.get_positive_prompt()
-        negative = self._prompt_panel.get_negative_prompt()
+        positive = self._prompt_section.get_positive_prompt()
+        negative = self._prompt_section.get_negative_prompt()
         params = self._params_widget.get_params(positive, negative)
 
         # Store whether user wanted random seed
@@ -656,10 +669,14 @@ class WorkScreen(Gtk.Box):
 
         try:
             # Get generation parameters
-            positive = self._prompt_panel.get_positive_prompt()
-            negative = self._prompt_panel.get_negative_prompt()
-            params = self._params_widget.get_params(positive, negative)
+            # Store raw user prompt and negative prompt (without random words)
+            raw_positive = self._prompt_section.get_raw_positive_prompt()
+            negative = self._prompt_section.get_negative_prompt()
+            # Get a sample params for dimensions/settings (prompt will be replaced per-generation)
+            params = self._params_widget.get_params(raw_positive, negative)
             strength = self._params_widget.get_strength()
+            # Store reference to prompt manager for generating fresh random prompts
+            prompt_manager = self._prompt_section.prompt_manager
 
             # Get model info
             checkpoint_path = str(model_manager.loaded.checkpoint.path)
@@ -821,9 +838,18 @@ class WorkScreen(Gtk.Box):
                         gpu_idx = available_gpus[0]
                         backend = self._gpu_backends[gpu_idx]
 
-                        # Create params with random seed for this generation
+                        # Generate fresh random prompt for this generation
+                        checked_words = prompt_manager.get_checked_words_string()
+                        if checked_words and raw_positive:
+                            fresh_prompt = f"{checked_words}, {raw_positive}"
+                        elif checked_words:
+                            fresh_prompt = checked_words
+                        else:
+                            fresh_prompt = raw_positive
+
+                        # Create params with random seed and fresh prompt for this generation
                         gen_params = GenerationParams(
-                            prompt=params.prompt,
+                            prompt=fresh_prompt,
                             negative_prompt=params.negative_prompt,
                             width=params.width,
                             height=params.height,
@@ -922,6 +948,9 @@ class WorkScreen(Gtk.Box):
             if upscaled:
                 image = upscaled
 
+        # Ensure output directory exists (important for symlinked directories)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
         # Save image
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         filename = f"batch_{timestamp}_seed{actual_seed}.png"
@@ -977,6 +1006,9 @@ class WorkScreen(Gtk.Box):
             upscaled = upscale_backend.upscale(image, upscale_model_path)
             if upscaled:
                 image = upscaled
+
+        # Ensure output directory exists (important for symlinked directories)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         # Save image
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -1082,7 +1114,7 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please load or generate an image first")
             return
 
-        positive = self._prompt_panel.get_positive_prompt()
+        positive = self._prompt_section.get_positive_prompt()
         if not positive.strip():
             self._status_bar.set_text("Please enter a positive prompt")
             return
@@ -1103,8 +1135,8 @@ class WorkScreen(Gtk.Box):
         """Perform the actual img2img generation (called after models are loaded, single image only)."""
         input_image = self._image_display.get_pil_image()
 
-        positive = self._prompt_panel.get_positive_prompt()
-        negative = self._prompt_panel.get_negative_prompt()
+        positive = self._prompt_section.get_positive_prompt()
+        negative = self._prompt_section.get_negative_prompt()
         params = self._params_widget.get_params(positive, negative)
         strength = self._params_widget.get_strength()
 
@@ -1205,7 +1237,7 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Failed to get mask")
             return
 
-        positive = self._prompt_panel.get_positive_prompt()
+        positive = self._prompt_section.get_positive_prompt()
         if not positive.strip():
             self._status_bar.set_text("Please enter a positive prompt")
             return
@@ -1223,8 +1255,8 @@ class WorkScreen(Gtk.Box):
             original_image = self._image_display.get_pil_image()
 
         mask_image = self._image_display.get_mask_image()
-        positive = self._prompt_panel.get_positive_prompt()
-        negative = self._prompt_panel.get_negative_prompt()
+        positive = self._prompt_section.get_positive_prompt()
+        negative = self._prompt_section.get_negative_prompt()
         params = self._params_widget.get_params(positive, negative)
         strength = self._params_widget.get_strength()
 
@@ -1303,7 +1335,7 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("No image to outpaint")
             return
 
-        positive = self._prompt_panel.get_positive_prompt()
+        positive = self._prompt_section.get_positive_prompt()
         if not positive.strip():
             self._status_bar.set_text("Please enter a positive prompt")
             return
@@ -1321,8 +1353,8 @@ class WorkScreen(Gtk.Box):
         current_image = self._image_display.get_pil_image()
 
         extensions = self._image_display.get_outpaint_extensions()
-        positive = self._prompt_panel.get_positive_prompt()
-        negative = self._prompt_panel.get_negative_prompt()
+        positive = self._prompt_section.get_positive_prompt()
+        negative = self._prompt_section.get_negative_prompt()
         params = self._params_widget.get_params(positive, negative)
         strength = self._params_widget.get_strength()
 
@@ -1560,7 +1592,7 @@ class WorkScreen(Gtk.Box):
 
         if metadata:
             # Restore prompts
-            self._prompt_panel.set_prompts(
+            self._prompt_section.set_prompts(
                 metadata.prompt,
                 metadata.negative_prompt
             )
@@ -1640,7 +1672,7 @@ class WorkScreen(Gtk.Box):
             # Try to load metadata if available
             metadata = load_metadata_from_image(target_path)
             if metadata:
-                self._prompt_panel.set_prompts(metadata.prompt, metadata.negative_prompt)
+                self._prompt_section.set_prompts(metadata.prompt, metadata.negative_prompt)
                 self._params_widget.set_size(metadata.width, metadata.height)
                 self._params_widget.set_steps(metadata.steps)
                 self._params_widget.set_cfg_scale(metadata.cfg_scale)
@@ -1773,8 +1805,15 @@ class WorkScreen(Gtk.Box):
 
     def get_panel_positions(self) -> dict:
         """Get current panel positions for saving to config."""
-        return {
+        positions = {
             "left": self._paned_outer.get_position(),
             "right": self._paned_inner.get_position(),
             "center": self._center_paned.get_position(),
         }
+        # Add prompt section positions
+        prompt_positions = self._prompt_section.get_paned_positions()
+        positions["prompt_section_width"] = prompt_positions.get("prompts_width", -1)
+        positions["prompt_section_split"] = prompt_positions.get("prompts_split", -1)
+        # Add prompt manager internal positions
+        positions["prompt_manager_split"] = self._prompt_section.prompt_manager.get_paned_position()
+        return positions

@@ -117,6 +117,10 @@ class AIImageGeneratorApp(Gtk.Application):
             window_config.left_panel_width = panel_positions.get("left", 280)
             window_config.right_panel_position = panel_positions.get("right", 800)
             window_config.center_panel_height = panel_positions.get("center", 500)
+            # Prompt section positions
+            window_config.prompt_section_width = panel_positions.get("prompt_section_width", -1)
+            window_config.prompt_section_split = panel_positions.get("prompt_section_split", -1)
+            window_config.prompt_manager_split = panel_positions.get("prompt_manager_split", -1)
 
         config_manager.save()
 

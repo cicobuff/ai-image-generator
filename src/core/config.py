@@ -53,6 +53,10 @@ class WindowConfig:
     left_panel_width: int = 280
     right_panel_position: int = 800
     center_panel_height: int = 500
+    # Prompt section paned positions
+    prompt_section_width: int = -1  # -1 means auto (use default)
+    prompt_section_split: int = -1  # -1 means auto (equal split)
+    prompt_manager_split: int = -1  # -1 means auto (equal split)
 
 
 @dataclass

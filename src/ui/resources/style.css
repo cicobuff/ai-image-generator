@@ -505,3 +505,69 @@ dropdown.purple-button > button > box > image {
 .success-message {
     color: #4CAF50;
 }
+
+/* Prompt Section and Manager */
+.prompt-section {
+    padding: 4px;
+}
+
+.prompt-manager-panel {
+    padding: 4px;
+    background-color: alpha(@theme_bg_color, 0.5);
+    border-radius: 4px;
+}
+
+/* Prompt list item */
+.prompt-list-item {
+    padding: 4px 6px;
+    border-radius: 4px;
+    margin: 1px 0;
+}
+
+.prompt-list-item:hover {
+    background-color: alpha(@theme_selected_bg_color, 0.3);
+}
+
+.prompt-list-item-selected {
+    background-color: alpha(@theme_selected_bg_color, 0.5);
+}
+
+/* Prompt word rows */
+.prompt-word-row {
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin: 1px 0;
+}
+
+.prompt-word-row:hover {
+    background-color: alpha(@theme_selected_bg_color, 0.3);
+}
+
+.prompt-word-selected {
+    background-color: alpha(@theme_selected_bg_color, 0.5);
+}
+
+/* Prompt manager add/remove buttons */
+.prompt-manager-btn {
+    min-width: 18px;
+    min-height: 18px;
+    padding: 1px;
+    border-radius: 3px;
+    -gtk-icon-size: 12px;
+}
+
+.prompt-manager-btn:disabled {
+    opacity: 0.4;
+}
+
+/* Prompt list count dropdown */
+.prompt-list-count {
+    min-height: 20px;
+    font-size: 0.85em;
+}
+
+.prompt-list-count > button {
+    min-height: 18px;
+    min-width: 32px;
+    padding: 0 4px;
+}

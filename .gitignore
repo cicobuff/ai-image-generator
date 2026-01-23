@@ -209,5 +209,6 @@ __marimo__/
 models/
 .venv
 output/
+output
 
 .claude/

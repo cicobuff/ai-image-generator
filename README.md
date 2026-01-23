@@ -26,6 +26,13 @@ A GTK 4 desktop application for AI image generation using Stable Diffusion, buil
 - **LoRA Support**: Load and apply multiple LoRA models with adjustable weights
 - **Upscaling**: 4x upscaling using Real-ESRGAN models (RealESRGAN_x4plus, RealESRGAN_x4plus_anime)
 
+### Prompt Management
+- **Prompt Lists**: Create reusable lists of words/phrases (e.g., quality tags, style modifiers)
+- **Random Selection**: Automatically select random words from checked lists during generation
+- **Configurable Count**: Choose how many words (1-10) to randomly pick from each list
+- **Batch Variation**: Each image in a batch gets a fresh random selection for variety
+- **File-Based Storage**: Lists are saved as simple text files for easy editing
+
 ### Performance Optimization
 - **torch.compile**: Optional model compilation with cached kernels for faster generation
   - Warning: First compilation takes many minutes depending on GPU
@@ -33,7 +40,6 @@ A GTK 4 desktop application for AI image generation using Stable Diffusion, buil
   - Does NOT work with Inpaint/Outpaint modes or multi-GPU batch generation
   - Each optimization is for a fixed resolution
 - **xformers**: Memory-efficient attention when available
-- **Prompt Caching**: Cached prompt embeddings for faster repeated generations
 - **CUDA Optimizations**: cuDNN benchmark, TF32, channels_last memory format
 
 ### User Interface
@@ -67,6 +73,62 @@ A GTK 4 desktop application for AI image generation using Stable Diffusion, buil
 
 ### Scheduler Types
 - normal, simple, karras, exponential, sgm_uniform
+
+## Prompt Management
+
+The Prompt Management system allows you to create lists of words or phrases that can be randomly combined with your prompts during generation. This is useful for adding variety to batch generations or consistently applying quality tags.
+
+### Location
+The Prompt Management panel is located in the center panel, below the image display. It consists of:
+- **Prompts** (left): Positive and negative prompt text areas
+- **List** (right): Your saved prompt lists with checkboxes
+- **Words** (right): Words in the currently selected list
+
+### Creating a Prompt List
+1. Click the **+** button next to "List"
+2. Enter a name for your list (e.g., "quality", "style", "lighting")
+3. Click "Create"
+4. The new list appears in the List panel
+
+### Adding Words to a List
+1. Click on a list to select it
+2. Click the **+** button next to "Words"
+3. Enter a word or phrase (e.g., "masterpiece", "best quality", "highly detailed")
+4. Click "Add"
+5. Repeat to add more words
+
+### Using Prompt Lists
+1. Check the checkbox next to one or more lists you want to use
+2. Set the number dropdown (1-10) to control how many words to randomly select from each list
+3. When you generate an image:
+   - The system randomly picks N words from each checked list (where N is the dropdown value)
+   - Selected words are prepended to your positive prompt with commas
+   - Each word is only picked once per list (no duplicates)
+   - If N exceeds the number of words in a list, all words are selected
+
+### Batch Generation
+During batch generation, each image gets a **fresh random selection** of words. This creates natural variety across your batch while maintaining your base prompt.
+
+### Example
+**List "quality"** contains: `masterpiece, best quality, highly detailed, 8k resolution`
+**Dropdown set to**: `2`
+**Your prompt**: `a beautiful landscape`
+
+Each generation might produce:
+- `masterpiece, 8k resolution, a beautiful landscape`
+- `best quality, highly detailed, a beautiful landscape`
+- `masterpiece, highly detailed, a beautiful landscape`
+
+### File Storage
+Lists are saved as text files in `models/prompt-lists/`:
+```
+models/prompt-lists/
+├── quality.txt
+├── style.txt
+└── lighting.txt
+```
+
+Each file contains one word/phrase per line, making them easy to edit with any text editor.
 
 ## Keyboard Shortcuts
 
@@ -185,8 +247,9 @@ generation:
 models/
 ├── checkpoints/     # Stable Diffusion model files (.safetensors, .ckpt)
 ├── vae/             # VAE model files
-├── lora/            # LoRA model files
+├── loras/           # LoRA model files
 ├── upscale/         # Real-ESRGAN upscaler models
+├── prompt-lists/    # Prompt list text files (one word per line)
 └── compiled/        # Cached torch.compile kernels
 
 output/              # Generated images (organized in subdirectories)
@@ -249,6 +312,8 @@ python main.py
 - **Mode Switching**: Modes are mutually exclusive - enabling one mode automatically disables others
 - **Info Icons**: Click the info icon (ⓘ) next to any section header for detailed help
 - **Label Tooltips**: Hover over parameter labels for 1 second to see explanations
+- **Prompt Lists**: Create lists of quality tags or style modifiers, check them to randomly add variety to your generations
+- **Batch Variety**: Use prompt lists with batch generation - each image gets different random words for natural variation
 
 ## License
 

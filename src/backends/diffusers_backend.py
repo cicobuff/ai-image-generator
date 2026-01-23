@@ -823,17 +823,10 @@ class DiffusersBackend:
 
     def _encode_prompts(self, prompt: str, negative_prompt: Optional[str]) -> bool:
         """
-        Encode prompts and cache the embeddings for reuse.
-        Returns True if new embeddings were computed, False if cache was used.
+        Encode prompts into embeddings.
+        Always re-encodes to support dynamic prompt generation (e.g., random word selection).
         """
         negative_prompt = negative_prompt or ""
-
-        # Check if we can use cached embeddings
-        if (self._cached_prompt == prompt and
-            self._cached_negative_prompt == negative_prompt and
-            self._cached_prompt_embeds is not None):
-            _log("Using cached prompt embeddings")
-            return False
 
         _log("Encoding prompts...")
 
