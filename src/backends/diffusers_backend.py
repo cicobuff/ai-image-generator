@@ -371,6 +371,8 @@ class DiffusersBackend:
                 if progress_callback:
                     progress_callback("Applying torch.compile with cached kernels...", 0.9)
                 _log("Applying torch.compile to UNet (using cached kernels)...")
+                # Reset dynamo state to avoid conflicts when loading on multiple GPUs
+                torch._dynamo.reset()
                 # Use default mode - CUDA graphs are disabled via environment variables
                 self._pipeline.unet = torch.compile(
                     self._pipeline.unet,
@@ -500,6 +502,9 @@ class DiffusersBackend:
 
             # Apply torch.compile to the UNet (the main computation bottleneck)
             _log("Applying torch.compile to UNet (default mode, no CUDA graphs)...")
+
+            # Reset dynamo state to ensure clean compilation
+            torch._dynamo.reset()
 
             # Use default mode - CUDA graphs are disabled via environment variables
             self._pipeline.unet = torch.compile(

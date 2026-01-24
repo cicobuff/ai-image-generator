@@ -760,6 +760,7 @@ class WorkScreen(Gtk.Box):
 
     def _run_parallel_batch(self, batch_type: str, gpu_indices: list[int], optimize_enabled: bool):
         """Run parallel batch generation across multiple GPUs."""
+        import gc
         import torch
         from PIL import Image
 
@@ -798,37 +799,29 @@ class WorkScreen(Gtk.Box):
             vae_name = model_manager.loaded.vae.name if model_manager.loaded.vae else ""
 
             # Check optimization settings
-            # Note: torch.compile with CUDA graphs doesn't work well across multiple GPUs
-            # due to CUDA graph capture conflicts, so we only enable it for single-GPU batch
             # optimize_enabled is passed from main thread (GTK widgets not thread-safe)
+            # CUDA graphs are disabled via environment variables, so multi-GPU optimization is safe
             use_compiled = False
 
-            if optimize_enabled and len(gpu_indices) > 1:
-                # Multi-GPU batch with optimization requested - warn user and disable
-                GLib.idle_add(
-                    self._status_bar.set_text,
-                    f"Note: Optimization disabled for multi-GPU batch (CUDA graph conflicts). Loading normally..."
-                )
-                optimize_enabled = False  # Disable for this batch
-
             if optimize_enabled:
-                # Single GPU batch - optimization is safe to use
                 # Check if compiled cache exists
                 has_cache = diffusers_backend.has_compiled_cache(
                     checkpoint_path, params.width, params.height
                 )
 
                 if has_cache:
+                    gpu_str = f"GPU {gpu_indices[0]}" if len(gpu_indices) == 1 else f"{len(gpu_indices)} GPUs"
                     GLib.idle_add(
                         self._status_bar.set_text,
-                        f"Compiled cache found. Loading optimized model on GPU {gpu_indices[0]}..."
+                        f"Compiled cache found. Loading optimized model on {gpu_str}..."
                     )
                     use_compiled = True
                 else:
-                    # Need to compile first
+                    # Need to compile first - only compile once on first GPU
+                    # The compiled kernels are cached on disk and shared by all GPUs
                     GLib.idle_add(
                         self._status_bar.set_text,
-                        f"Compiling model on GPU {gpu_indices[0]} (first time only)..."
+                        f"Compiling model on GPU {gpu_indices[0]} (first time only, cache shared by all GPUs)..."
                     )
 
                     # Create a temporary backend on first GPU for compilation
@@ -848,6 +841,11 @@ class WorkScreen(Gtk.Box):
                     compile_backend.unload_model()
                     del compile_backend
 
+                    # Force cleanup before loading on multiple GPUs
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
                     if not success:
                         GLib.idle_add(
                             self._status_bar.set_text,
@@ -855,9 +853,10 @@ class WorkScreen(Gtk.Box):
                         )
                         use_compiled = False
                     else:
+                        gpu_str = f"GPU {gpu_indices[0]}" if len(gpu_indices) == 1 else f"{len(gpu_indices)} GPUs"
                         GLib.idle_add(
                             self._status_bar.set_text,
-                            f"Compilation complete. Loading optimized model on GPU {gpu_indices[0]}..."
+                            f"Compilation complete. Loading optimized model on {gpu_str}..."
                         )
                         use_compiled = True
 
