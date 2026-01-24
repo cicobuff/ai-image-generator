@@ -1028,6 +1028,8 @@ class WorkScreen(Gtk.Box):
                          upscale_model_name: str, checkpoint_name: str, vae_name: str,
                          model_type: str, gpu_idx: int = 0):
         """Generate a single image on a specific GPU backend."""
+        import gc
+        import torch
         from src.utils.metadata import save_image_with_metadata, GenerationMetadata
 
         # Create progress callback for this GPU
@@ -1083,6 +1085,11 @@ class WorkScreen(Gtk.Box):
 
         save_image_with_metadata(image, output_path, metadata)
 
+        # Force cleanup to prevent memory accumulation with compiled models
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return output_path, image
 
     def _generate_img2img_on_gpu(self, backend: DiffusersBackend, params: GenerationParams,
@@ -1091,6 +1098,8 @@ class WorkScreen(Gtk.Box):
                                   upscale_model_name: str, checkpoint_name: str, vae_name: str,
                                   model_type: str, gpu_idx: int = 0):
         """Generate a single img2img image on a specific GPU backend."""
+        import gc
+        import torch
         from src.utils.metadata import save_image_with_metadata, GenerationMetadata
 
         # Create progress callback for this GPU
@@ -1147,6 +1156,11 @@ class WorkScreen(Gtk.Box):
         )
 
         save_image_with_metadata(image, output_path, metadata)
+
+        # Force cleanup to prevent memory accumulation with compiled models
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         return output_path, image
 

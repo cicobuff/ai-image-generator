@@ -957,6 +957,11 @@ class DiffusersBackend:
             _log("Calling pipeline...")
             result = self._pipeline(**gen_kwargs)
 
+            # Synchronize CUDA to ensure all GPU operations complete
+            # This is important for compiled models using CUDA graphs
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+
             _log("Generation complete")
 
             if result.images:
@@ -1046,6 +1051,10 @@ class DiffusersBackend:
 
             # Generate image
             result = self._img2img_pipeline(**gen_kwargs)
+
+            # Synchronize CUDA to ensure all GPU operations complete
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
             _log("Img2img generation complete")
 
@@ -1153,6 +1162,10 @@ class DiffusersBackend:
 
             # Generate image
             result = self._inpaint_pipeline(**gen_kwargs)
+
+            # Synchronize CUDA to ensure all GPU operations complete
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
             _log("Inpaint generation complete")
 
@@ -1386,6 +1399,10 @@ class DiffusersBackend:
 
             # Generate on working canvas
             result = self._inpaint_pipeline(**gen_kwargs)
+
+            # Synchronize CUDA to ensure all GPU operations complete
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
             if not result.images:
                 return None
