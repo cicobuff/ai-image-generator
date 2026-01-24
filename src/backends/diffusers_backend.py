@@ -1,5 +1,12 @@
 """Diffusers backend for Stable Diffusion image generation."""
 
+import os
+# Disable CUDA graphs to avoid conflicts with persistent worker threads
+# Must be set before importing torch
+os.environ["TORCHINDUCTOR_CUDAGRAPH_TREES"] = "0"
+os.environ["TORCH_CUDAGRAPH_DISABLE"] = "1"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "0"  # Keep async for performance
+
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -235,17 +242,7 @@ class DiffusersBackend:
                 cache_dir = self._get_compiled_cache_path(checkpoint_path, target_width, target_height)
                 if cache_dir.exists() and any(cache_dir.glob("*")):
                     should_compile = True
-
-                    # Enable persistent FX graph cache for torch.compile
-                    import torch._inductor.config as inductor_config
-                    inductor_config.fx_graph_cache = True
-                    inductor_config.fx_graph_remote_cache = False
-                    inductor_config.cache_dir = str(cache_dir)
-
-                    # Also set environment variables as fallback
-                    os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(cache_dir)
-                    os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
-
+                    self._setup_inductor_cache(cache_dir)
                     _log(f"Using compiled cache from: {cache_dir}")
                 else:
                     _log(f"No compiled cache found at: {cache_dir}, loading without compilation")
@@ -368,13 +365,15 @@ class DiffusersBackend:
             self._enable_optimizations(progress_callback)
 
             # Apply torch.compile if using compiled cache
-            if should_compile:
+            if should_compile and cache_dir:
+                # Re-apply cache settings right before compile to ensure they're active
+                self._setup_inductor_cache(cache_dir)
                 if progress_callback:
                     progress_callback("Applying torch.compile with cached kernels...", 0.9)
                 _log("Applying torch.compile to UNet (using cached kernels)...")
+                # Use default mode - CUDA graphs are disabled via environment variables
                 self._pipeline.unet = torch.compile(
                     self._pipeline.unet,
-                    mode="max-autotune",
                     fullgraph=False,
                 )
                 self._is_compiled = True
@@ -407,6 +406,28 @@ class DiffusersBackend:
             if progress_callback:
                 progress_callback(f"Error: {e}", 0.0)
             return False
+
+    def _setup_inductor_cache(self, cache_dir: Path) -> None:
+        """Set up PyTorch inductor cache directory for torch.compile.
+
+        Args:
+            cache_dir: Path to the cache directory
+        """
+        import os
+
+        # Ensure directory exists with proper structure
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        # Set environment variables for inductor cache
+        # These are the primary way to configure the cache in PyTorch 2.9+
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(cache_dir)
+        os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
+
+        # Also set TORCH_COMPILE_CACHE_DIR as fallback
+        os.environ["TORCH_COMPILE_CACHE_DIR"] = str(cache_dir)
+
+        _log(f"Inductor cache directory set to: {cache_dir}")
+        _log(f"Directory exists: {cache_dir.exists()}")
 
     def compile_model(
         self,
@@ -448,23 +469,11 @@ class DiffusersBackend:
             ).hexdigest()[:12]
 
             cache_dir = cache_base / cache_key
-            cache_dir.mkdir(parents=True, exist_ok=True)
 
-            # Enable persistent FX graph cache for torch.compile
-            # This is required for caching compiled kernels across sessions
-            import torch._inductor.config as inductor_config
-            inductor_config.fx_graph_cache = True
-            inductor_config.fx_graph_remote_cache = False  # Local cache only
-
-            # Set cache directory via inductor config (more reliable than env vars)
-            inductor_config.cache_dir = str(cache_dir)
-
-            # Also set environment variables as fallback
-            os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(cache_dir)
-            os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
+            # Set up inductor cache BEFORE loading model
+            self._setup_inductor_cache(cache_dir)
 
             _log(f"Compilation cache directory: {cache_dir}")
-            _log(f"FX graph cache enabled: {inductor_config.fx_graph_cache}")
 
             if progress_callback:
                 progress_callback("Loading model for compilation...", 0.1)
@@ -483,16 +492,18 @@ class DiffusersBackend:
                 _log("Failed to load model for compilation")
                 return False
 
+            # Re-apply inductor cache settings after model load (in case load_model reset anything)
+            self._setup_inductor_cache(cache_dir)
+
             if progress_callback:
                 progress_callback("Applying torch.compile to UNet...", 0.45)
 
             # Apply torch.compile to the UNet (the main computation bottleneck)
-            _log("Applying torch.compile to UNet (mode=max-autotune, fullgraph=False)...")
+            _log("Applying torch.compile to UNet (default mode, no CUDA graphs)...")
 
-            # Use max-autotune for best performance, disable fullgraph for compatibility
+            # Use default mode - CUDA graphs are disabled via environment variables
             self._pipeline.unet = torch.compile(
                 self._pipeline.unet,
-                mode="max-autotune",
                 fullgraph=False,
             )
 
@@ -576,6 +587,19 @@ class DiffusersBackend:
                                    f"Checkpoint: {checkpoint_path}\n")
 
             _log(f"Model compilation complete. Cache saved to: {cache_dir}")
+            _log(f"Cache directory exists: {cache_dir.exists()}")
+
+            # Log cache directory contents
+            if cache_dir.exists():
+                cache_files = list(cache_dir.iterdir())
+                _log(f"Cache directory contains {len(cache_files)} items")
+                for f in cache_files[:10]:  # Show first 10
+                    _log(f"  - {f.name}")
+                if len(cache_files) > 10:
+                    _log(f"  ... and {len(cache_files) - 10} more")
+            else:
+                _log("WARNING: Cache directory does not exist after compilation!")
+
             _log("The compiled model is now loaded and ready for fast generation.")
 
             return True
