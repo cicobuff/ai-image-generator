@@ -34,10 +34,10 @@ A GTK 4 desktop application for AI image generation using Stable Diffusion, buil
 - **File-Based Storage**: Lists are saved as simple text files for easy editing
 
 ### Performance Optimization
-- **torch.compile**: Optional model compilation with cached kernels for faster generation
-  - Warning: First compilation takes many minutes depending on GPU
-  - Only recommended for 50+ batch images on a single GPU
-  - Does NOT work with Inpaint/Outpaint modes or multi-GPU batch generation
+- **torch.compile**: Optional model compilation with cached kernels for ~20% faster generation
+  - Warning: First compilation takes several minutes depending on GPU
+  - Compiled kernels are cached and shared across all GPUs
+  - Does NOT work with Inpaint/Outpaint modes
   - Each optimization is for a fixed resolution
 - **xformers**: Memory-efficient attention when available
 - **CUDA Optimizations**: cuDNN benchmark, TF32, channels_last memory format
@@ -303,7 +303,7 @@ python main.py
 
 - **Auto Model Loading**: Clicking Generate/Img2Img will automatically load models if not already loaded
 - **Metadata Restoration**: Clicking a thumbnail restores all generation parameters from that image
-- **Batch + Optimize**: For single-GPU batch, enable Optimize for faster generation. Multi-GPU batch disables optimization due to CUDA graph conflicts
+- **Batch + Optimize**: Enable Optimize for ~20% faster batch generation. Compiles once, then all GPUs share the cached kernels
 - **Gallery Navigation**: Use the directory dropdown in the gallery panel to organize outputs into subdirectories
 - **LoRA Stacking**: Multiple LoRAs can be active simultaneously with individual weight controls
 - **Outpaint Chaining**: You can outpaint multiple times to progressively extend an image in any direction

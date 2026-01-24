@@ -119,12 +119,11 @@ SECTION_INFO = {
         "• Checkpoint: Main Stable Diffusion model (required)\n"
         "• VAE: Variational Auto-Encoder for image decoding\n"
         "• CLIP: Text encoder (usually embedded in checkpoint)\n\n"
-        "• Optimize: Enable torch.compile for faster generation.\n"
-        "  WARNING: Takes very long on first run (many minutes).\n"
-        "  Only recommended for 50+ batch images on single GPU.\n"
+        "• Optimize: Enable torch.compile for ~20% faster generation.\n"
+        "  First compilation takes several minutes, then cached.\n"
+        "  Compiled kernels are shared across all GPUs.\n"
         "  Fixed resolution per optimization.\n"
-        "  Does NOT work with Inpaint/Outpaint modes.\n"
-        "  Does NOT work with multi-GPU batch generation."
+        "  Does NOT work with Inpaint/Outpaint modes."
     ),
     "parameters": (
         "Generation Parameters\n\n"
@@ -229,12 +228,11 @@ LABEL_TOOLTIPS = {
     "vae": "Variational Auto-Encoder. Converts latent space to images. 'Embedded' uses the one in checkpoint.",
     "clip": "Text encoder model. Converts prompts to embeddings. Usually embedded in checkpoint.",
     "optimize": (
-        "Use torch.compile for optimized generation. "
-        "WARNING: This option will take very long to run for the first time (many minutes depending on your GPU). "
-        "Unless you want to generate more than 50 images in batch mode using a single GPU, it is not recommended. "
+        "Use torch.compile for ~20% faster generation. "
+        "First compilation takes several minutes, then kernels are cached and shared across all GPUs. "
         "Each optimization is for a model with a fixed resolution. "
-        "This will not work with Inpainting and Outpainting mode. "
-        "It will also not work for multi-GPU batch generation, but it does work for single-GPU batch generation."
+        "Works with single-GPU and multi-GPU batch generation. "
+        "Does NOT work with Inpainting and Outpainting modes."
     ),
 
     # Upscale
