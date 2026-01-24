@@ -52,6 +52,7 @@ class WorkScreen(Gtk.Box):
         self._gpu_backends: dict[int, DiffusersBackend] = {}  # GPU index -> backend instance
         self._batch_executor: ThreadPoolExecutor = None
         self._batch_cancelled = False
+        self._batch_completed = 0  # Track actual completed count
         self._build_ui()
         self._connect_signals()
         self._initial_setup()
@@ -723,6 +724,7 @@ class WorkScreen(Gtk.Box):
         self._batch_count = self._batch_widget.batch_count
         self._batch_current = 0
         self._batch_cancelled = False
+        self._batch_completed = 0
 
         # Store input image for img2img batch (use the same image for all)
         if batch_type == "img2img":
@@ -757,6 +759,9 @@ class WorkScreen(Gtk.Box):
         """Run parallel batch generation across multiple GPUs."""
         import torch
         from PIL import Image
+
+        # Initialize completed counter before try block so it's accessible in finally
+        completed = 0
 
         try:
             # Get generation parameters
@@ -903,7 +908,6 @@ class WorkScreen(Gtk.Box):
 
             # Create a queue of generation tasks
             remaining = self._batch_count
-            completed = 0
             gpu_list = list(self._gpu_backends.keys())
 
             # Use ThreadPoolExecutor to run generations in parallel
@@ -912,9 +916,36 @@ class WorkScreen(Gtk.Box):
 
                 while remaining > 0 or futures:
                     if self._batch_cancelled:
-                        # Cancel pending futures
+                        # Cancel pending futures (only affects not-yet-started futures)
                         for future in futures:
                             future.cancel()
+
+                        # Wait for any running futures to complete before cleanup
+                        # This prevents segfault from unloading models while generation is in progress
+                        GLib.idle_add(self._status_bar.set_text, "Waiting for current generation to finish...")
+                        for future in list(futures.keys()):
+                            gpu_idx = futures[future]
+                            if not future.cancelled():
+                                try:
+                                    # Wait for the running future to complete and process result
+                                    result_path, result_image = future.result(timeout=120)
+                                    completed += 1
+
+                                    # Reset GPU step progress
+                                    GLib.idle_add(
+                                        self._progress_widget.reset_gpu_step_progress, gpu_idx
+                                    )
+
+                                    # Update UI with result (so gallery gets updated)
+                                    if result_path and result_image:
+                                        GLib.idle_add(
+                                            self._on_batch_image_complete,
+                                            result_path, result_image, completed, self._batch_count
+                                        )
+                                except Exception as e:
+                                    print(f"Error waiting for future during cancellation: {e}")
+
+                        GLib.idle_add(self._status_bar.set_text, f"Batch cancelled after {completed} images")
                         break
 
                     # Submit new tasks for available GPUs
@@ -1019,6 +1050,8 @@ class WorkScreen(Gtk.Box):
             GLib.idle_add(self._status_bar.set_text, f"Batch error: {e}")
 
         finally:
+            # Save completed count for end message
+            self._batch_completed = completed
             # Clean up GPU backends
             self._cleanup_gpu_backends()
             GLib.idle_add(self._end_batch_generation)
@@ -1029,6 +1062,7 @@ class WorkScreen(Gtk.Box):
                          model_type: str, gpu_idx: int = 0):
         """Generate a single image on a specific GPU backend."""
         import gc
+        import time
         import torch
         from src.utils.metadata import save_image_with_metadata, GenerationMetadata
 
@@ -1036,7 +1070,11 @@ class WorkScreen(Gtk.Box):
         def progress_callback(step: int, total: int):
             GLib.idle_add(self._progress_widget.set_gpu_step_progress, gpu_idx, step, total)
 
+        gen_start = time.time()
         image = backend.generate(params, progress_callback=progress_callback)
+        gen_end = time.time()
+        print(f"[GPU{gpu_idx}] backend.generate() took {gen_end - gen_start:.3f}s")
+
         if image is None:
             return None, None
 
@@ -1050,9 +1088,11 @@ class WorkScreen(Gtk.Box):
 
         # Upscale if enabled
         if upscale_enabled and upscale_model_path:
+            upscale_start = time.time()
             upscaled = upscale_backend.upscale(image, upscale_model_path)
             if upscaled:
                 image = upscaled
+            print(f"[GPU{gpu_idx}] Upscale took {time.time() - upscale_start:.3f}s")
 
         # Ensure output directory exists (important for symlinked directories)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1083,12 +1123,16 @@ class WorkScreen(Gtk.Box):
             original_height=original_height if upscale_enabled else 0,
         )
 
+        save_start = time.time()
         save_image_with_metadata(image, output_path, metadata)
+        print(f"[GPU{gpu_idx}] Save took {time.time() - save_start:.3f}s")
 
         # Force cleanup to prevent memory accumulation with compiled models
+        cleanup_start = time.time()
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        print(f"[GPU{gpu_idx}] Cleanup took {time.time() - cleanup_start:.3f}s")
 
         return output_path, image
 
@@ -1214,13 +1258,17 @@ class WorkScreen(Gtk.Box):
 
     def _end_batch_generation(self):
         """End the batch generation sequence."""
-        count = self._batch_count
+        total_planned = self._batch_count
+        actual_completed = self._batch_completed
+        was_cancelled = self._batch_cancelled
+
         self._batch_mode = False
         self._batch_type = None
         self._batch_count = 0
         self._batch_current = 0
         self._batch_input_image = None
         self._batch_cancelled = False
+        self._batch_completed = 0
 
         # Re-enable batch widget and toolbar
         self._batch_widget.set_sensitive_all(True)
@@ -1230,7 +1278,11 @@ class WorkScreen(Gtk.Box):
         self._progress_widget.reset()
         self._progress_widget.set_generating(False)
 
-        self._status_bar.set_text(f"Batch generation complete: {count} images generated")
+        # Show appropriate status message
+        if was_cancelled:
+            self._status_bar.set_text(f"Batch cancelled: {actual_completed}/{total_planned} images generated")
+        else:
+            self._status_bar.set_text(f"Batch complete: {actual_completed} images generated")
 
     def _on_img2img(self):
         """Handle Image to Image button click."""

@@ -954,13 +954,20 @@ class DiffusersBackend:
                     gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
 
             # Generate image
+            import time
             _log("Calling pipeline...")
+            pipeline_start = time.time()
             result = self._pipeline(**gen_kwargs)
+            pipeline_end = time.time()
+            _log(f"Pipeline returned in {pipeline_end - pipeline_start:.3f}s")
 
             # Synchronize CUDA to ensure all GPU operations complete
             # This is important for compiled models using CUDA graphs
             if torch.cuda.is_available():
+                sync_start = time.time()
                 torch.cuda.synchronize()
+                sync_end = time.time()
+                _log(f"CUDA sync took {sync_end - sync_start:.3f}s")
 
             _log("Generation complete")
 
