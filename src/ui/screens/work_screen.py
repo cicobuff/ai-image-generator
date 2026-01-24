@@ -747,15 +747,18 @@ class WorkScreen(Gtk.Box):
         self._batch_widget.set_sensitive_all(False)
         self._toolbar.set_state(GenerationState.GENERATING)
 
+        # Read optimization setting on main thread (GTK widgets not thread-safe)
+        optimize_enabled = self._optimize_checkbox.get_active()
+
         # Start batch generation in a background thread
         thread = threading.Thread(
             target=self._run_parallel_batch,
-            args=(batch_type, gpu_indices),
+            args=(batch_type, gpu_indices, optimize_enabled),
             daemon=True
         )
         thread.start()
 
-    def _run_parallel_batch(self, batch_type: str, gpu_indices: list[int]):
+    def _run_parallel_batch(self, batch_type: str, gpu_indices: list[int], optimize_enabled: bool):
         """Run parallel batch generation across multiple GPUs."""
         import torch
         from PIL import Image
@@ -797,7 +800,7 @@ class WorkScreen(Gtk.Box):
             # Check optimization settings
             # Note: torch.compile with CUDA graphs doesn't work well across multiple GPUs
             # due to CUDA graph capture conflicts, so we only enable it for single-GPU batch
-            optimize_enabled = self._optimize_checkbox.get_active()
+            # optimize_enabled is passed from main thread (GTK widgets not thread-safe)
             use_compiled = False
 
             if optimize_enabled and len(gpu_indices) > 1:

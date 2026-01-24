@@ -142,6 +142,13 @@ class AIImageGeneratorApp(Gtk.Application):
         """Called when the application shuts down."""
         import os
 
+        # Shutdown generation service worker pool
+        try:
+            from src.core.generation_service import generation_service
+            generation_service.shutdown()
+        except Exception as e:
+            print(f"Error shutting down generation service: {e}")
+
         # Cleanup diffusers backend (unload models, clear CUDA cache)
         try:
             from src.backends.diffusers_backend import diffusers_backend

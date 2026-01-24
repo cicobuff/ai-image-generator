@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional, Callable
 from datetime import datetime
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 
 from PIL import Image
@@ -48,6 +49,12 @@ class GenerationService:
         self._state = GenerationState.IDLE
         self._cancel_requested = False
         self._current_thread: Optional[threading.Thread] = None
+
+        # Persistent worker thread pool for CUDA warmth between generations.
+        # Using a single worker keeps the thread alive, preserving cuDNN benchmark
+        # cache and other CUDA state that would be lost if we created new threads.
+        self._worker_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gen_worker")
+        self._current_future = None
 
         # Track loaded model info for metadata
         self._loaded_checkpoint_name: str = ""
@@ -336,8 +343,8 @@ class GenerationService:
             finally:
                 self._set_state(GenerationState.IDLE)
 
-        self._current_thread = threading.Thread(target=generate_thread, daemon=True)
-        self._current_thread.start()
+        # Submit to persistent worker pool to keep CUDA state warm between generations
+        self._current_future = self._worker_pool.submit(generate_thread)
 
     def generate_img2img(
         self,
@@ -489,8 +496,8 @@ class GenerationService:
             finally:
                 self._set_state(GenerationState.IDLE)
 
-        self._current_thread = threading.Thread(target=generate_thread, daemon=True)
-        self._current_thread.start()
+        # Submit to persistent worker pool to keep CUDA state warm between generations
+        self._current_future = self._worker_pool.submit(generate_thread)
 
     def generate_inpaint(
         self,
@@ -651,8 +658,8 @@ class GenerationService:
             finally:
                 self._set_state(GenerationState.IDLE)
 
-        self._current_thread = threading.Thread(target=generate_thread, daemon=True)
-        self._current_thread.start()
+        # Submit to persistent worker pool to keep CUDA state warm between generations
+        self._current_future = self._worker_pool.submit(generate_thread)
 
     def generate_outpaint(
         self,
@@ -816,14 +823,20 @@ class GenerationService:
             finally:
                 self._set_state(GenerationState.IDLE)
 
-        self._current_thread = threading.Thread(target=generate_thread, daemon=True)
-        self._current_thread.start()
+        # Submit to persistent worker pool to keep CUDA state warm between generations
+        self._current_future = self._worker_pool.submit(generate_thread)
 
     def cancel(self) -> None:
         """Request cancellation of current operation."""
         if self._state == GenerationState.GENERATING:
             self._cancel_requested = True
             self._set_state(GenerationState.CANCELLING)
+
+    def shutdown(self) -> None:
+        """Shutdown the worker pool. Call this when the application is exiting."""
+        if self._worker_pool:
+            self._worker_pool.shutdown(wait=False)
+            self._worker_pool = None
 
     def _save_image(
         self,

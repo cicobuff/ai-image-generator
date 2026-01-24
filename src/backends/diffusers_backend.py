@@ -105,6 +105,9 @@ class DiffusersBackend:
         self._cached_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None  # SDXL only
         # Track if model is compiled
         self._is_compiled: bool = False
+        # Track generation count and last resolution for warm-up diagnostics
+        self._generation_count: int = 0
+        self._last_resolution: Optional[tuple[int, int]] = None
 
     @property
     def is_loaded(self) -> bool:
@@ -188,12 +191,9 @@ class DiffusersBackend:
             True if a compiled cache exists
         """
         cache_dir = self._get_compiled_cache_path(checkpoint_path, target_width, target_height)
-        # Check if cache directory exists and has content
-        if cache_dir.exists() and cache_dir.is_dir():
-            # Check for actual cache files (PyTorch stores various files)
-            cache_files = list(cache_dir.glob("*"))
-            return len(cache_files) > 0
-        return False
+        # Check for our marker file that indicates successful compilation
+        marker_file = cache_dir / ".compile_complete"
+        return marker_file.exists()
 
     def load_model(
         self,
@@ -235,9 +235,17 @@ class DiffusersBackend:
                 cache_dir = self._get_compiled_cache_path(checkpoint_path, target_width, target_height)
                 if cache_dir.exists() and any(cache_dir.glob("*")):
                     should_compile = True
-                    # Set environment variables for PyTorch to find the cache
+
+                    # Enable persistent FX graph cache for torch.compile
+                    import torch._inductor.config as inductor_config
+                    inductor_config.fx_graph_cache = True
+                    inductor_config.fx_graph_remote_cache = False
+                    inductor_config.cache_dir = str(cache_dir)
+
+                    # Also set environment variables as fallback
                     os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(cache_dir)
-                    os.environ["TORCH_COMPILE_CACHE_DIR"] = str(cache_dir)
+                    os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
+
                     _log(f"Using compiled cache from: {cache_dir}")
                 else:
                     _log(f"No compiled cache found at: {cache_dir}, loading without compilation")
@@ -442,11 +450,21 @@ class DiffusersBackend:
             cache_dir = cache_base / cache_key
             cache_dir.mkdir(parents=True, exist_ok=True)
 
-            # Set environment variables for persistent cache
+            # Enable persistent FX graph cache for torch.compile
+            # This is required for caching compiled kernels across sessions
+            import torch._inductor.config as inductor_config
+            inductor_config.fx_graph_cache = True
+            inductor_config.fx_graph_remote_cache = False  # Local cache only
+
+            # Set cache directory via inductor config (more reliable than env vars)
+            inductor_config.cache_dir = str(cache_dir)
+
+            # Also set environment variables as fallback
             os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(cache_dir)
-            os.environ["TORCH_COMPILE_CACHE_DIR"] = str(cache_dir)
+            os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
 
             _log(f"Compilation cache directory: {cache_dir}")
+            _log(f"FX graph cache enabled: {inductor_config.fx_graph_cache}")
 
             if progress_callback:
                 progress_callback("Loading model for compilation...", 0.1)
@@ -550,6 +568,12 @@ class DiffusersBackend:
 
             if progress_callback:
                 progress_callback("Model compiled successfully!", 1.0)
+
+            # Create marker file to indicate successful compilation
+            marker_file = cache_dir / ".compile_complete"
+            marker_file.write_text(f"Compiled at {datetime.now().isoformat()}\n"
+                                   f"Resolution: {target_width}x{target_height}\n"
+                                   f"Checkpoint: {checkpoint_path}\n")
 
             _log(f"Model compilation complete. Cache saved to: {cache_dir}")
             _log("The compiled model is now loaded and ready for fast generation.")
@@ -917,7 +941,18 @@ class DiffusersBackend:
                 actual_seed = params.seed
             generator = torch.Generator(device="cpu").manual_seed(actual_seed)
 
+            self._generation_count += 1
+            current_resolution = (params.width, params.height)
+            resolution_changed = self._last_resolution != current_resolution
+            self._last_resolution = current_resolution
+
+            import threading
+            thread_id = threading.current_thread().ident
+            thread_name = threading.current_thread().name
+
             _log(f"Starting generation: {params.width}x{params.height}, {params.steps} steps (seed: {actual_seed})")
+            _log(f"Generation #{self._generation_count}, Resolution changed: {resolution_changed}, Compiled: {self._is_compiled}")
+            _log(f"Worker thread: {thread_name} (id: {thread_id})")
 
             # Create progress callback wrapper
             callback_fn = None
