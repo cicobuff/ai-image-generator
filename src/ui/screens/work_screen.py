@@ -800,14 +800,17 @@ class WorkScreen(Gtk.Box):
 
             # Check optimization settings
             # optimize_enabled is passed from main thread (GTK widgets not thread-safe)
-            # CUDA graphs are disabled via environment variables, so multi-GPU optimization is safe
+            # NOTE: For multi-GPU batch, only the first GPU uses torch.compile to avoid
+            # FX tracing conflicts when running compiled models concurrently
             use_compiled = False
+            single_gpu_batch = len(gpu_indices) == 1
 
             if optimize_enabled:
                 # Check if compiled cache exists
                 has_cache = diffusers_backend.has_compiled_cache(
                     checkpoint_path, params.width, params.height
                 )
+                print(f"[Batch] optimize_enabled={optimize_enabled}, has_cache={has_cache}, resolution={params.width}x{params.height}")
 
                 if has_cache:
                     gpu_str = f"GPU {gpu_indices[0]}" if len(gpu_indices) == 1 else f"{len(gpu_indices)} GPUs"
@@ -860,28 +863,77 @@ class WorkScreen(Gtk.Box):
                         )
                         use_compiled = True
 
-            if not optimize_enabled and len(gpu_indices) == 1:
+            if optimize_enabled and not single_gpu_batch:
+                # Multi-GPU with optimization: only first GPU gets compiled to avoid FX tracing conflicts
+                GLib.idle_add(
+                    self._status_bar.set_text,
+                    f"Loading models on {len(gpu_indices)} GPU(s) (optimized on GPU {gpu_indices[0]})..."
+                )
+            elif not optimize_enabled and len(gpu_indices) == 1:
                 GLib.idle_add(self._status_bar.set_text, f"Loading model on GPU {gpu_indices[0]}...")
             elif not optimize_enabled and len(gpu_indices) > 1:
                 GLib.idle_add(self._status_bar.set_text, f"Loading models on {len(gpu_indices)} GPU(s)...")
 
-            # Create backend instances for each GPU and load models
-            self._gpu_backends = {}
+            # Reuse existing backend instances if possible, or create new ones
+            # For multi-GPU with optimization: only compile on first GPU to avoid FX tracing conflicts
+            backends_to_remove = set(self._gpu_backends.keys()) - set(gpu_indices)
+            for gpu_idx in backends_to_remove:
+                # Remove backends for GPUs no longer in use
+                try:
+                    self._gpu_backends[gpu_idx].unload_model()
+                except Exception:
+                    pass
+                del self._gpu_backends[gpu_idx]
+
             for i, gpu_idx in enumerate(gpu_indices):
                 if self._batch_cancelled:
                     break
 
+                # Only use torch.compile on the first GPU when multi-GPU optimization is enabled
+                # This avoids FX tracing conflicts while still benefiting from compilation on one GPU
+                compile_this_gpu = use_compiled and (single_gpu_batch or i == 0)
+                print(f"[Batch] GPU {gpu_idx} (i={i}): use_compiled={use_compiled}, single_gpu_batch={single_gpu_batch}, compile_this_gpu={compile_this_gpu}")
+
+                # Check if we can reuse an existing backend
+                existing_backend = self._gpu_backends.get(gpu_idx)
+                if existing_backend and existing_backend.is_loaded:
+                    # Check if the loaded model matches what we need
+                    same_checkpoint = existing_backend.loaded_checkpoint == checkpoint_path
+                    same_vae = existing_backend.loaded_vae == vae_path
+                    same_compiled = existing_backend.is_compiled == compile_this_gpu
+                    print(f"[Batch] GPU {gpu_idx}: Checking reuse - same_ckpt={same_checkpoint}, same_vae={same_vae}, same_compiled={same_compiled} (existing={existing_backend.is_compiled}, needed={compile_this_gpu})")
+
+                    if same_checkpoint and same_vae and same_compiled:
+                        # Can reuse this backend - just update LoRAs if needed
+                        print(f"[Batch] GPU {gpu_idx}: Reusing existing backend")
+                        GLib.idle_add(
+                            self._status_bar.set_text,
+                            f"Reusing {'optimized ' if compile_this_gpu else ''}model on GPU {gpu_idx}..."
+                        )
+                        # TODO: Handle LoRA changes if needed
+                        continue
+                else:
+                    print(f"[Batch] GPU {gpu_idx}: No existing backend to reuse")
+
+                # Need to load fresh
                 GLib.idle_add(
                     self._status_bar.set_text,
-                    f"Loading {'optimized ' if use_compiled else ''}model on GPU {gpu_idx} ({i + 1}/{len(gpu_indices)})..."
+                    f"Loading {'optimized ' if compile_this_gpu else ''}model on GPU {gpu_idx} ({i + 1}/{len(gpu_indices)})..."
                 )
+
+                # Unload existing backend if any
+                if existing_backend:
+                    try:
+                        existing_backend.unload_model()
+                    except Exception:
+                        pass
 
                 backend = DiffusersBackend(gpu_index=gpu_idx)
                 success = backend.load_model(
                     checkpoint_path=checkpoint_path,
                     model_type=model_type,
                     vae_path=vae_path,
-                    use_compiled=use_compiled,
+                    use_compiled=compile_this_gpu,
                     target_width=params.width,
                     target_height=params.height,
                 )
@@ -1054,8 +1106,8 @@ class WorkScreen(Gtk.Box):
         finally:
             # Save completed count for end message
             self._batch_completed = completed
-            # Clean up GPU backends
-            self._cleanup_gpu_backends()
+            # Don't cleanup GPU backends - keep them loaded for reuse in next batch
+            # self._cleanup_gpu_backends()
             GLib.idle_add(self._end_batch_generation)
 
     def _generate_on_gpu(self, backend: DiffusersBackend, params: GenerationParams,

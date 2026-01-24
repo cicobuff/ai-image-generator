@@ -240,7 +240,10 @@ class DiffusersBackend:
             cache_dir = None
             if use_compiled:
                 cache_dir = self._get_compiled_cache_path(checkpoint_path, target_width, target_height)
-                if cache_dir.exists() and any(cache_dir.glob("*")):
+                cache_exists = cache_dir.exists()
+                has_files = any(cache_dir.glob("*")) if cache_exists else False
+                _log(f"Checking compiled cache: use_compiled={use_compiled}, cache_dir={cache_dir}, exists={cache_exists}, has_files={has_files}")
+                if cache_exists and has_files:
                     should_compile = True
                     self._setup_inductor_cache(cache_dir)
                     _log(f"Using compiled cache from: {cache_dir}")
