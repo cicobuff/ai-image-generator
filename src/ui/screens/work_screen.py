@@ -513,7 +513,6 @@ class WorkScreen(Gtk.Box):
         """Check if models need to be (re)loaded based on selection changes."""
         # If no model loaded at all, need to load
         if not generation_service.is_model_loaded:
-            print(f"[DEBUG] _needs_model_reload: True (no model loaded, is_model_loaded={generation_service.is_model_loaded})")
             return True
 
         # Check if selected checkpoint differs from loaded checkpoint
@@ -522,10 +521,8 @@ class WorkScreen(Gtk.Box):
             selected_path = str(selected_checkpoint.path)
             loaded_path = diffusers_backend.loaded_checkpoint
             if selected_path != loaded_path:
-                print(f"[DEBUG] _needs_model_reload: True (checkpoint mismatch: selected={selected_path}, loaded={loaded_path})")
                 return True
 
-        print(f"[DEBUG] _needs_model_reload: False (model already loaded correctly)")
         return False
 
     def _needs_optimization(self) -> bool:
@@ -560,7 +557,6 @@ class WorkScreen(Gtk.Box):
 
         # Check if we need to load or reload the model
         needs_reload = self._needs_model_reload()
-        print(f"[DEBUG] _ensure_model_ready: needs_reload={needs_reload}, optimize_enabled={optimize_enabled}, is_compiled={diffusers_backend.is_compiled}")
 
         if needs_reload:
             if optimize_enabled:
@@ -589,7 +585,6 @@ class WorkScreen(Gtk.Box):
         # Model is loaded, check if we need optimization
         if optimize_enabled and not diffusers_backend.is_compiled:
             has_compiled = diffusers_backend.has_compiled_cache(checkpoint_path, width, height)
-            print(f"[DEBUG] _ensure_model_ready: model loaded but checking optimization, has_compiled={has_compiled}")
             if has_compiled:
                 # Reload with compiled cache
                 self._pending_generation = pending_action

@@ -231,8 +231,6 @@ class DiffusersBackend:
         """
         import os
 
-        print(f"[DEBUG] DiffusersBackend.load_model called: checkpoint={checkpoint_path}, use_compiled={use_compiled}")
-
         try:
             if progress_callback:
                 progress_callback("Preparing to load model...", 0.0)
