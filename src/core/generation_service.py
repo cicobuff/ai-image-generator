@@ -269,6 +269,17 @@ class GenerationService:
                 )
                 print(f"diffusers_backend.generate() returned: {image is not None}")
 
+                # Log VRAM usage after generation
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        for i in range(torch.cuda.device_count()):
+                            allocated = torch.cuda.memory_allocated(i) / 1024**3
+                            reserved = torch.cuda.memory_reserved(i) / 1024**3
+                            print(f"[VRAM] GPU {i} - Allocated: {allocated:.2f} GB, Reserved: {reserved:.2f} GB")
+                except Exception as e:
+                    print(f"[VRAM] Error getting memory info: {e}")
+
                 # Show decoding progress (VAE decode happens at the end of pipeline)
                 self._notify_progress("Finalizing image...", 0.95)
 
