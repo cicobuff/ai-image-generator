@@ -54,7 +54,14 @@ class PromptSection(Gtk.Box):
         self._prompts_paned.connect("realize", self._on_prompts_paned_realize)
         prompts_box.append(self._prompts_paned)
 
-        # Positive prompt (top)
+        # Top section: horizontal box for positive prompt and refiner prompt
+        self._top_prompts_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._top_prompts_box.set_vexpand(True)
+        self._prompts_paned.set_start_child(self._top_prompts_box)
+        self._prompts_paned.set_resize_start_child(True)
+        self._prompts_paned.set_shrink_start_child(True)
+
+        # Positive prompt (left side of top)
         self._positive_entry = PromptEntry(
             label="Positive Prompt",
             is_positive=True,
@@ -62,9 +69,20 @@ class PromptSection(Gtk.Box):
         )
         self._positive_entry.set_size_request(-1, 60)  # Minimum height
         self._positive_entry.set_vexpand(True)
-        self._prompts_paned.set_start_child(self._positive_entry)
-        self._prompts_paned.set_resize_start_child(True)
-        self._prompts_paned.set_shrink_start_child(True)
+        self._positive_entry.set_hexpand(True)
+        self._top_prompts_box.append(self._positive_entry)
+
+        # Refiner prompt (right side of top, hidden by default)
+        self._refiner_entry = PromptEntry(
+            label="Refiner Prompt",
+            style_type="refiner",  # Use yellow/amber border for refiner
+            placeholder="Prompt for refining selected regions...",
+        )
+        self._refiner_entry.set_size_request(-1, 60)  # Minimum height
+        self._refiner_entry.set_vexpand(True)
+        self._refiner_entry.set_hexpand(True)
+        self._refiner_entry.set_visible(False)  # Hidden by default
+        self._top_prompts_box.append(self._refiner_entry)
 
         # Negative prompt (bottom)
         self._negative_entry = PromptEntry(
@@ -151,6 +169,26 @@ class PromptSection(Gtk.Box):
     def get_raw_positive_prompt(self) -> str:
         """Get just the user-entered positive prompt (without manager words)."""
         return self._positive_entry.get_text()
+
+    def get_refiner_prompt(self) -> str:
+        """Get the refiner prompt text, prepending checked words from manager."""
+        user_prompt = self._refiner_entry.get_text()
+        checked_words = self._prompt_manager.get_checked_words_string()
+
+        if checked_words and user_prompt:
+            return f"{checked_words}, {user_prompt}"
+        elif checked_words:
+            return checked_words
+        else:
+            return user_prompt
+
+    def set_refiner_prompt(self, text: str):
+        """Set the refiner prompt text."""
+        self._refiner_entry.set_text(text)
+
+    def set_refiner_mode(self, enabled: bool):
+        """Show or hide the refiner prompt entry."""
+        self._refiner_entry.set_visible(enabled)
 
     def clear(self):
         """Clear both prompts."""

@@ -14,9 +14,22 @@ FONT_SIZE_STEP = 1
 class PromptEntry(Gtk.Box):
     """Text entry widget for prompts with colored border."""
 
-    def __init__(self, label: str, is_positive: bool = True, placeholder: str = ""):
+    def __init__(self, label: str, is_positive: bool = True, placeholder: str = "", style_type: str = None):
+        """
+        Create a prompt entry widget.
+
+        Args:
+            label: The label text for the entry
+            is_positive: If True, use green style; if False, use red style (ignored if style_type is set)
+            placeholder: Placeholder text (not currently used)
+            style_type: Explicit style type: "positive", "negative", or "refiner"
+        """
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        self._is_positive = is_positive
+        # Determine style type
+        if style_type:
+            self._style_type = style_type
+        else:
+            self._style_type = "positive" if is_positive else "negative"
         self._font_size = DEFAULT_FONT_SIZE
 
         self._build_ui(label, placeholder)
@@ -31,10 +44,7 @@ class PromptEntry(Gtk.Box):
         label = Gtk.Label(label=label_text)
         label.set_halign(Gtk.Align.START)
         label.set_hexpand(True)
-        if self._is_positive:
-            label.add_css_class("prompt-label-positive")
-        else:
-            label.add_css_class("prompt-label-negative")
+        label.add_css_class(f"prompt-label-{self._style_type}")
         header.append(label)
 
         # Font size decrease button
@@ -55,10 +65,7 @@ class PromptEntry(Gtk.Box):
 
         # Frame for border styling
         frame = Gtk.Frame()
-        if self._is_positive:
-            frame.add_css_class("prompt-positive")
-        else:
-            frame.add_css_class("prompt-negative")
+        frame.add_css_class(f"prompt-{self._style_type}")
         self.append(frame)
 
         # Scrolled window for text view

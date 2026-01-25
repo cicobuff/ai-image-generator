@@ -28,6 +28,17 @@ window {
     box-shadow: 0 0 4px rgba(244, 67, 54, 0.5);
 }
 
+.prompt-refiner {
+    border: 2px solid #FFCA28;
+    border-radius: 4px;
+    padding: 4px;
+}
+
+.prompt-refiner:focus-within {
+    border-color: #FFD54F;
+    box-shadow: 0 0 4px rgba(255, 202, 40, 0.5);
+}
+
 /* Prompt labels */
 .prompt-label-positive {
     color: #4CAF50;
@@ -36,6 +47,11 @@ window {
 
 .prompt-label-negative {
     color: #F44336;
+    font-weight: bold;
+}
+
+.prompt-label-refiner {
+    color: #FFCA28;
     font-weight: bold;
 }
 

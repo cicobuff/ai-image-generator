@@ -1787,6 +1787,9 @@ class WorkScreen(Gtk.Box):
         """Handle Refiner Mode toggle."""
         self._image_display.set_refiner_mode(enabled)
 
+        # Show/hide refiner prompt
+        self._prompt_section.set_refiner_mode(enabled)
+
         # Update center panel style
         center_panel = self._image_display.get_parent().get_parent()
         if enabled:
@@ -1944,8 +1947,8 @@ class WorkScreen(Gtk.Box):
             self._status_bar.set_text("Please select at least one mask to refine")
             return
 
-        # Get prompts
-        positive = self._prompt_section.get_positive_prompt()
+        # Get refiner prompt (uses the dedicated refiner prompt field)
+        positive = self._prompt_section.get_refiner_prompt()
         if not positive.strip():
             self._status_bar.set_text("Please enter a refinement prompt")
             return
@@ -1963,7 +1966,8 @@ class WorkScreen(Gtk.Box):
 
     def _do_generate_refine(self, masks: list[DetectedMask]):
         """Perform the actual refinement generation."""
-        positive = self._prompt_section.get_positive_prompt()
+        # Use refiner prompt instead of positive prompt
+        positive = self._prompt_section.get_refiner_prompt()
         negative = self._prompt_section.get_negative_prompt()
         params = self._params_widget.get_params(positive, negative)
         strength = self._params_widget.get_strength()
