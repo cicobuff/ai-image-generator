@@ -13,6 +13,7 @@ A GTK 4 desktop application for AI image generation using Stable Diffusion, buil
 - **Outpainting**: Extend images beyond their original borders in any direction (left, right, top, bottom)
 - **Batch Generation**: Generate multiple images in sequence with automatic seed variation
 - **Multi-GPU Support**: Parallel batch generation across multiple GPUs (e.g., 2x RTX 3090)
+- **Refiner Mode**: Detect and refine specific regions using SAM3 text-prompted segmentation
 
 ### Image Editing
 - **Crop Mode**: Crop images to a selected region with preset sizes or custom dimensions
@@ -188,6 +189,18 @@ Each file contains one word/phrase per line, making them easy to edit with any t
 - Tooltip shows dimensions while drawing/resizing
 - Use size presets dropdown for quick sizing
 
+### Refiner Mode - Mask Selection
+| Action | Effect |
+|--------|--------|
+| Single Left Click on mask | Toggle mask selection (selected/deselected) |
+| Double Left Click on mask | Delete the mask |
+| Hover over mask | Highlight mask with brighter color |
+
+- Detected masks appear as yellow overlays
+- Selected masks have solid borders and higher opacity
+- Deselected masks have dashed borders and lower opacity
+- Labels show the detection prompt and confidence score
+
 ## Toolbar Buttons
 
 ### Model Management
@@ -222,6 +235,84 @@ Each file contains one word/phrase per line, making them easy to edit with any t
 - **Size Presets**: Quick selection of common crop sizes (1024x1024, 1152x896, etc.)
 - Crop masks can be moved (drag inside) and resized (drag corners)
 
+### Refiner Mode (appears when image is loaded)
+- **Refiner Mode**: Toggle refiner editing mode (yellow theme)
+- **Detect**: Open text prompt dialog to detect objects in the image
+- **Clear Masks**: Remove all detected masks
+- **Generate Refine**: Refine selected regions using diffusion inpainting
+
+## Refiner Mode
+
+The Refiner Mode allows you to detect specific objects or regions in an image using text prompts, then selectively refine those areas using the diffusion model. This is useful for:
+- Enhancing faces, hands, or other detailed areas
+- Fixing specific parts of an image without affecting the rest
+- Applying different prompts to different regions
+
+### Requirements
+- SAM3 model from Meta (facebook/sam3)
+- Install the sam3 package: `pip install git+https://github.com/facebookresearch/sam3.git`
+- Additional dependencies: `pip install einops decord pycocotools`
+
+### Model Setup
+1. Download the SAM3 model from HuggingFace: [facebook/sam3](https://huggingface.co/facebook/sam3)
+2. Place the model files in `models/sams/sam3/`
+3. Required files: `config.json`, `model.safetensors`, `processor_config.json`, tokenizer files
+
+### Using Refiner Mode
+
+#### Step 1: Enable Refiner Mode
+1. Load an image in the main display
+2. Click the **Refiner Mode** toggle button (yellow)
+3. The center panel will show a yellow border indicating refiner mode is active
+
+#### Step 2: Detect Objects
+1. Click the **Detect** button
+2. Enter a text prompt describing what to detect (e.g., "face", "hand", "person", "eye")
+3. Adjust the **Threshold** slider (0.1-1.0) to control detection sensitivity
+   - Lower values = more detections (may include false positives)
+   - Higher values = fewer detections (more precise)
+4. Click **Detect** to run SAM3 segmentation
+
+#### Step 3: Select Masks
+- Detected regions appear as yellow overlays with labels showing confidence scores
+- **Single-click** on a mask to toggle its selection (selected = brighter, deselected = dimmer with dashed border)
+- **Double-click** on a mask to delete it
+- Only selected masks will be refined
+
+#### Step 4: Generate Refinement
+1. Enter a refinement prompt in the main positive prompt area
+2. Optionally adjust negative prompt
+3. Click **Generate Refine**
+4. Each selected region is processed:
+   - Cropped with padding
+   - Upscaled (2x minimum, scaled to at least 512x512 for quality)
+   - Inpainted using the diffusion model
+   - Downscaled and composited back with feathered edges
+
+### Refinement Pipeline Details
+
+For each selected mask, the refiner performs:
+1. **Crop**: Extract bounding box with 32px padding
+2. **Upscale**: Scale up using Real-ESRGAN (if available) or Lanczos interpolation
+3. **Minimum Size**: Ensure region is at least 512x512 for quality inpainting
+4. **Inpaint**: Run diffusion inpainting with your prompt
+5. **Downscale**: Scale back to original region size
+6. **Composite**: Blend into original image with Gaussian-blurred edges
+
+### Tips
+- Use specific prompts for detection: "face" works better than "person's face"
+- For small regions, the refiner automatically upscales to ensure quality
+- Lower the threshold if you're not detecting enough regions
+- Use the strength parameter (in generation params) to control how much the region changes
+- Each mask uses a different seed for variety
+- The SAM3 model is unloaded before generation to free VRAM
+
+### Troubleshooting
+- **No detections**: Try lowering the threshold or using different prompt words
+- **Too many detections**: Increase the threshold
+- **Poor quality refinement**: The region may be too small; the refiner will auto-upscale but very tiny regions may still lack detail
+- **VRAM issues**: SAM3 uses ~2.5GB VRAM; it's unloaded before diffusion runs
+
 ## Configuration
 
 Configuration is stored in `~/.aiimagegen/config.yaml`:
@@ -250,7 +341,15 @@ models/
 ├── loras/           # LoRA model files
 ├── upscale/         # Real-ESRGAN upscaler models
 ├── prompt-lists/    # Prompt list text files (one word per line)
-└── compiled/        # Cached torch.compile kernels
+├── compiled/        # Cached torch.compile kernels
+└── sams/
+    └── sam3/        # SAM3 segmentation model (for Refiner Mode)
+        ├── config.json
+        ├── model.safetensors
+        ├── processor_config.json
+        ├── tokenizer.json
+        ├── vocab.json
+        └── merges.txt
 
 output/              # Generated images (organized in subdirectories)
 ```
@@ -314,6 +413,8 @@ python main.py
 - **Label Tooltips**: Hover over parameter labels for 1 second to see explanations
 - **Prompt Lists**: Create lists of quality tags or style modifiers, check them to randomly add variety to your generations
 - **Batch Variety**: Use prompt lists with batch generation - each image gets different random words for natural variation
+- **Refiner Mode**: Use text prompts like "face" or "hand" to detect and selectively enhance specific regions
+- **Refiner Quality**: Small regions are automatically upscaled to at least 512x512 for better inpainting results
 
 ## License
 
