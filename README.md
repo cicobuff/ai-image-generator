@@ -42,6 +42,7 @@ A GTK 4 desktop application for AI image generation using Stable Diffusion, buil
   - Each optimization is for a fixed resolution
 - **xformers**: Memory-efficient attention when available
 - **CUDA Optimizations**: cuDNN benchmark, TF32, channels_last memory format
+- **Extended Prompt Length**: SDXL models support up to 256 tokens (vs standard 77 token CLIP limit)
 
 ### User Interface
 - **Three-Panel Layout**: Model/parameters (left), image display (center), thumbnail gallery (right)
@@ -74,6 +75,16 @@ A GTK 4 desktop application for AI image generation using Stable Diffusion, buil
 
 ### Scheduler Types
 - normal, simple, karras, exponential, sgm_uniform
+
+### Prompt Length Limits
+| Model Type | Max Tokens | Notes |
+|------------|------------|-------|
+| SDXL | 256 | Extended from default 77 tokens |
+| SD 1.5 | 77 | Fundamental CLIP limitation |
+
+- Tokens are not the same as words; a single word may use 1-3 tokens
+- If your prompt is truncated, you'll see a warning in the console
+- For SDXL, the extended 256 token limit is automatically enabled
 
 ## Prompt Management
 
@@ -415,6 +426,7 @@ python main.py
 - **Batch Variety**: Use prompt lists with batch generation - each image gets different random words for natural variation
 - **Refiner Mode**: Use text prompts like "face" or "hand" to detect and selectively enhance specific regions
 - **Refiner Quality**: Small regions are automatically upscaled to at least 512x512 for better inpainting results
+- **Long Prompts**: SDXL models support up to 256 tokens; SD 1.5 is limited to 77 tokens
 
 ## License
 

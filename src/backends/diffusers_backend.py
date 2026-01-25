@@ -52,6 +52,14 @@ from diffusers import (
 from src.utils.constants import SAMPLERS, KARRAS_SAMPLERS
 from src.core.gpu_manager import gpu_manager
 
+# Import compel for long prompt support
+try:
+    from compel import Compel, ReturnedEmbeddingsType
+    COMPEL_AVAILABLE = True
+except ImportError:
+    COMPEL_AVAILABLE = False
+    _log("Compel not available - prompts will be limited to 77 tokens")
+
 
 @dataclass
 class GenerationParams:
@@ -881,42 +889,109 @@ class DiffusersBackend:
         """
         Encode prompts into embeddings.
         Always re-encodes to support dynamic prompt generation (e.g., random word selection).
+        Uses compel library for long prompt support (>77 tokens).
+        For SDXL models, supports up to 256 tokens (vs standard 77 token limit).
         """
         negative_prompt = negative_prompt or ""
 
         _log("Encoding prompts...")
 
         try:
-            if self._is_sdxl:
-                # SDXL uses dual text encoders
-                (
-                    self._cached_prompt_embeds,
-                    self._cached_negative_prompt_embeds,
-                    self._cached_pooled_prompt_embeds,
-                    self._cached_negative_pooled_prompt_embeds,
-                ) = self._pipeline.encode_prompt(
-                    prompt=prompt,
-                    prompt_2=None,
-                    device=self._device,
-                    num_images_per_prompt=1,
-                    do_classifier_free_guidance=True,
-                    negative_prompt=negative_prompt,
-                    negative_prompt_2=None,
-                )
+            if COMPEL_AVAILABLE:
+                # Use compel for long prompt support
+                if self._is_sdxl:
+                    # SDXL uses dual text encoders
+                    # Suppress deprecation warning about multi-encoder API (still works in compel 2.x)
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", message=".*deprecated.*")
+                        compel = Compel(
+                            tokenizer=[self._pipeline.tokenizer, self._pipeline.tokenizer_2],
+                            text_encoder=[self._pipeline.text_encoder, self._pipeline.text_encoder_2],
+                            returned_embeddings_type=ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED,
+                            requires_pooled=[False, True],
+                            truncate_long_prompts=False,
+                        )
+
+                    # Encode prompts with compel (supports long prompts)
+                    conditioning, pooled = compel(prompt)
+                    negative_conditioning, negative_pooled = compel(negative_prompt)
+
+                    # Manually pad embeddings to same length (required by diffusers)
+                    # compel.pad_conditioning_tensors_to_same_length doesn't work with SDXL multi-encoder
+                    max_len = max(conditioning.shape[1], negative_conditioning.shape[1])
+                    if conditioning.shape[1] < max_len:
+                        padding = torch.zeros(
+                            conditioning.shape[0], max_len - conditioning.shape[1], conditioning.shape[2],
+                            device=conditioning.device, dtype=conditioning.dtype
+                        )
+                        conditioning = torch.cat([conditioning, padding], dim=1)
+                    if negative_conditioning.shape[1] < max_len:
+                        padding = torch.zeros(
+                            negative_conditioning.shape[0], max_len - negative_conditioning.shape[1], negative_conditioning.shape[2],
+                            device=negative_conditioning.device, dtype=negative_conditioning.dtype
+                        )
+                        negative_conditioning = torch.cat([negative_conditioning, padding], dim=1)
+
+                    self._cached_prompt_embeds = conditioning
+                    self._cached_negative_prompt_embeds = negative_conditioning
+                    self._cached_pooled_prompt_embeds = pooled
+                    self._cached_negative_pooled_prompt_embeds = negative_pooled
+
+                    _log(f"Using compel for SDXL long prompt encoding (seq_len={conditioning.shape[1]})")
+                else:
+                    # SD 1.5 uses single text encoder
+                    compel = Compel(
+                        tokenizer=self._pipeline.tokenizer,
+                        text_encoder=self._pipeline.text_encoder,
+                        truncate_long_prompts=False,
+                    )
+
+                    # Encode prompts with compel (supports long prompts)
+                    prompt_embeds = compel(prompt)
+                    negative_prompt_embeds = compel(negative_prompt)
+
+                    # Pad embeddings to same length (required by diffusers)
+                    [prompt_embeds, negative_prompt_embeds] = compel.pad_conditioning_tensors_to_same_length(
+                        [prompt_embeds, negative_prompt_embeds]
+                    )
+
+                    self._cached_prompt_embeds = prompt_embeds
+                    self._cached_negative_prompt_embeds = negative_prompt_embeds
+                    self._cached_pooled_prompt_embeds = None
+                    self._cached_negative_pooled_prompt_embeds = None
+
+                    _log(f"Using compel for SD 1.5 long prompt encoding (seq_len={prompt_embeds.shape[1]})")
             else:
-                # SD 1.5 uses single text encoder
-                # encode_prompt returns (prompt_embeds, negative_prompt_embeds) when do_classifier_free_guidance=True
-                prompt_embeds, negative_prompt_embeds = self._pipeline.encode_prompt(
-                    prompt=prompt,
-                    device=self._device,
-                    num_images_per_prompt=1,
-                    do_classifier_free_guidance=True,
-                    negative_prompt=negative_prompt,
-                )
-                self._cached_prompt_embeds = prompt_embeds
-                self._cached_negative_prompt_embeds = negative_prompt_embeds
-                self._cached_pooled_prompt_embeds = None
-                self._cached_negative_pooled_prompt_embeds = None
+                # Fallback to standard encoding (77 token limit)
+                if self._is_sdxl:
+                    # SDXL uses dual text encoders
+                    (
+                        self._cached_prompt_embeds,
+                        self._cached_negative_prompt_embeds,
+                        self._cached_pooled_prompt_embeds,
+                        self._cached_negative_pooled_prompt_embeds,
+                    ) = self._pipeline.encode_prompt(
+                        prompt=prompt,
+                        prompt_2=None,
+                        device=self._device,
+                        num_images_per_prompt=1,
+                        do_classifier_free_guidance=True,
+                        negative_prompt=negative_prompt,
+                        negative_prompt_2=None,
+                    )
+                else:
+                    # SD 1.5 uses single text encoder
+                    prompt_embeds, negative_prompt_embeds = self._pipeline.encode_prompt(
+                        prompt=prompt,
+                        device=self._device,
+                        num_images_per_prompt=1,
+                        do_classifier_free_guidance=True,
+                        negative_prompt=negative_prompt,
+                    )
+                    self._cached_prompt_embeds = prompt_embeds
+                    self._cached_negative_prompt_embeds = negative_prompt_embeds
+                    self._cached_pooled_prompt_embeds = None
+                    self._cached_negative_pooled_prompt_embeds = None
 
             # Store the prompts we encoded
             self._cached_prompt = prompt
