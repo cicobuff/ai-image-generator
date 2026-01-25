@@ -1,6 +1,6 @@
 """Image display widget using Cairo rendering with mask support."""
 
-from typing import Optional, Callable
+from typing import Optional, Callable, TYPE_CHECKING
 from pathlib import Path
 from enum import Enum
 import io
@@ -11,6 +11,9 @@ from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Gio
 
 from PIL import Image, ImageDraw, ImageFilter
 import numpy as np
+
+if TYPE_CHECKING:
+    from src.backends.segmentation_backend import DetectedMask
 
 
 class MaskTool(Enum):
@@ -59,6 +62,9 @@ class ImageDisplay(Gtk.DrawingArea):
     MASK_COLOR = (144, 238, 144, 128)  # Light green with 50% transparency
     OUTPAINT_MASK_COLOR = (236, 64, 122, 128)  # Pink with 50% transparency
     CROP_MASK_COLOR = (126, 87, 194, 128)  # Purple with 50% transparency
+    REFINER_MASK_COLOR = (255, 202, 40, 128)  # Yellow with 50% transparency
+    REFINER_MASK_SELECTED_COLOR = (255, 202, 40, 180)  # Yellow with higher opacity for selected
+    REFINER_MASK_HOVER_COLOR = (255, 213, 79, 200)  # Lighter yellow for hover
     ZOOM_STEP = 1.2  # Zoom factor per scroll step
     MIN_ZOOM = 0.1  # Minimum zoom (10%)
     MAX_ZOOM = 20.0  # Maximum zoom (2000%)
@@ -100,6 +106,12 @@ class ImageDisplay(Gtk.DrawingArea):
         self._crop_drag_start_y: float = 0
         self._crop_drag_orig_rect: Optional[tuple] = None  # Original rect before drag
         self._on_crop_mask_changed: Optional[Callable[[bool], None]] = None  # Callback when mask changes
+
+        # Refiner-related state
+        self._refiner_mode: bool = False
+        self._refiner_masks: list["DetectedMask"] = []
+        self._hovered_mask_id: Optional[int] = None
+        self._on_refiner_masks_changed: Optional[Callable[[bool], None]] = None  # Callback when masks change
 
         # Drag and drop callback
         self._on_image_dropped: Optional[Callable[[Path], None]] = None  # Callback when image is dropped
@@ -258,6 +270,32 @@ class ImageDisplay(Gtk.DrawingArea):
 
         return OutpaintDirection.NONE
 
+    def _get_mask_at_point(self, widget_x: float, widget_y: float) -> Optional["DetectedMask"]:
+        """Check if widget coordinates are over a refiner mask.
+
+        Returns the DetectedMask at the point, or None.
+        """
+        if not self._refiner_masks or self._pixbuf is None:
+            return None
+
+        img_x, img_y = self._widget_to_image_coords(widget_x, widget_y)
+        if img_x < 0 or img_y < 0:
+            return None
+
+        # Check masks in reverse order (last drawn on top)
+        for mask in reversed(self._refiner_masks):
+            # Check bounding box first for quick rejection
+            x1, y1, x2, y2 = mask.bbox
+            if x1 <= img_x <= x2 and y1 <= img_y <= y2:
+                # Check actual mask pixel
+                mask_y = int(img_y)
+                mask_x = int(img_x)
+                if 0 <= mask_y < mask.mask.shape[0] and 0 <= mask_x < mask.mask.shape[1]:
+                    if mask.mask[mask_y, mask_x] > 0:
+                        return mask
+
+        return None
+
     def _get_crop_handle_at(self, widget_x: float, widget_y: float) -> CropDragMode:
         """Check if widget coordinates are over a crop mask handle or inside the mask.
 
@@ -319,6 +357,17 @@ class ImageDisplay(Gtk.DrawingArea):
         # Update cursor based on mode and tool
         if self._is_panning:
             self.set_cursor(Gdk.Cursor.new_from_name("grabbing", None))
+        elif self._refiner_mode and self._refiner_masks:
+            # Check if hovering over a mask
+            mask = self._get_mask_at_point(x, y)
+            old_hovered = self._hovered_mask_id
+            self._hovered_mask_id = mask.id if mask else None
+            if self._hovered_mask_id != old_hovered:
+                self.queue_draw()  # Redraw for hover effect
+            if mask:
+                self.set_cursor(Gdk.Cursor.new_from_name("pointer", None))
+            else:
+                self.set_cursor(None)
         elif self._outpaint_mode and self._outpaint_tool == OutpaintTool.EDGE:
             # Determine which edge zone we're in and set appropriate cursor
             direction = self._get_outpaint_direction(x, y)
@@ -585,6 +634,18 @@ class ImageDisplay(Gtk.DrawingArea):
         """Handle mouse button press."""
         # Grab focus for keyboard events
         self.grab_focus()
+
+        # Handle refiner mode clicks
+        if self._refiner_mode and self._refiner_masks:
+            mask = self._get_mask_at_point(x, y)
+            if mask is not None:
+                if n_press == 2:
+                    # Double-click: delete mask
+                    self.delete_mask(mask.id)
+                else:
+                    # Single-click: toggle selection
+                    self.toggle_mask_selection(mask.id)
+                return
 
         # Handle outpaint mode
         if self._outpaint_mode and self._outpaint_tool == OutpaintTool.EDGE:
@@ -1033,6 +1094,10 @@ class ImageDisplay(Gtk.DrawingArea):
         if self._crop_mode and self._crop_rect is not None:
             self._draw_crop_mask(cr, width, height)
 
+        # Draw refiner masks overlay
+        if self._refiner_mode and self._refiner_masks:
+            self._draw_refiner_masks(cr, width, height)
+
         # Draw zoom indicator
         if self._zoom_level != 1.0:
             self._draw_zoom_indicator(cr, width, height)
@@ -1185,6 +1250,101 @@ class ImageDisplay(Gtk.DrawingArea):
         cr.set_source_rgb(1, 1, 1)
         cr.move_to(tooltip_x, tooltip_y)
         cr.show_text(text)
+
+    def _draw_refiner_masks(self, cr, width, height):
+        """Draw refiner mask overlays with selection states."""
+        if not self._refiner_masks or self._pixbuf is None:
+            return
+
+        for mask in self._refiner_masks:
+            x1, y1, x2, y2 = mask.bbox
+
+            # Convert image coordinates to screen coordinates
+            screen_x1 = self._img_x + (x1 - self._pan_x) * self._scale
+            screen_y1 = self._img_y + (y1 - self._pan_y) * self._scale
+            screen_x2 = self._img_x + (x2 - self._pan_x) * self._scale
+            screen_y2 = self._img_y + (y2 - self._pan_y) * self._scale
+
+            screen_w = screen_x2 - screen_x1
+            screen_h = screen_y2 - screen_y1
+
+            # Determine color based on state
+            if mask.id == self._hovered_mask_id:
+                color = self.REFINER_MASK_HOVER_COLOR
+            elif mask.selected:
+                color = self.REFINER_MASK_SELECTED_COLOR
+            else:
+                color = self.REFINER_MASK_COLOR
+
+            r, g, b, a = color
+            alpha_norm = a / 255.0
+
+            # Draw semi-transparent filled mask region
+            # Create a temporary surface for the mask
+            cr.save()
+            cr.translate(self._img_x, self._img_y)
+            cr.scale(self._scale, self._scale)
+            cr.translate(-self._pan_x, -self._pan_y)
+
+            # Draw the mask shape
+            cr.set_source_rgba(r / 255.0, g / 255.0, b / 255.0, alpha_norm * 0.5)
+
+            # Draw mask pixels as a path (simplified - just use bbox for performance)
+            # For precise mask shape, we'd need to convert mask to path
+            mask_h, mask_w = mask.mask.shape
+            img_height = self._pixbuf.get_height()
+            img_width = self._pixbuf.get_width()
+
+            # Use the actual mask data for better accuracy
+            for y in range(0, mask_h, max(1, mask_h // 50)):
+                row_start = None
+                for x in range(mask_w):
+                    if mask.mask[y, x] > 0:
+                        if row_start is None:
+                            row_start = x
+                    else:
+                        if row_start is not None:
+                            cr.rectangle(x1 + row_start, y1 + y, x - row_start, max(1, mask_h // 50))
+                            row_start = None
+                if row_start is not None:
+                    cr.rectangle(x1 + row_start, y1 + y, mask_w - row_start, max(1, mask_h // 50))
+
+            cr.fill()
+            cr.restore()
+
+            # Draw border
+            cr.set_source_rgba(r / 255.0, g / 255.0, b / 255.0, 0.9)
+            cr.set_line_width(2 if mask.selected else 1)
+            if not mask.selected:
+                cr.set_dash([3, 3])
+            else:
+                cr.set_dash([])
+            cr.rectangle(screen_x1, screen_y1, screen_w, screen_h)
+            cr.stroke()
+            cr.set_dash([])  # Reset dash
+
+            # Draw label
+            label = f"{mask.label} ({mask.confidence:.0%})"
+            if not mask.selected:
+                label = f"[x] {label}"
+
+            cr.set_font_size(10)
+            cr.select_font_face("Sans", 0, 0)
+            extents = cr.text_extents(label)
+
+            # Label background
+            label_x = screen_x1
+            label_y = screen_y1 - 4
+
+            cr.set_source_rgba(0, 0, 0, 0.7)
+            cr.rectangle(label_x - 2, label_y - extents.height - 2,
+                        extents.width + 4, extents.height + 4)
+            cr.fill()
+
+            # Label text
+            cr.set_source_rgb(1, 1, 1)
+            cr.move_to(label_x, label_y)
+            cr.show_text(label)
 
     def _draw_outpaint_overlays(self, cr, width, height):
         """Draw outpaint extension overlays showing where the image will be extended."""
@@ -1636,6 +1796,72 @@ class ImageDisplay(Gtk.DrawingArea):
 
         self.queue_draw()
 
+    # Refiner mode methods
+    def set_refiner_mode(self, enabled: bool):
+        """Enable or disable refiner mode."""
+        self._refiner_mode = enabled
+        if not enabled:
+            # Clear masks when exiting
+            self._refiner_masks = []
+            self._hovered_mask_id = None
+            if self._on_refiner_masks_changed:
+                self._on_refiner_masks_changed(False)
+        self.queue_draw()
+
+    def set_refiner_masks(self, masks: list["DetectedMask"]):
+        """Set the detected refiner masks to display."""
+        self._refiner_masks = masks
+        self._hovered_mask_id = None
+        if self._on_refiner_masks_changed:
+            self._on_refiner_masks_changed(len(masks) > 0)
+        self.queue_draw()
+
+    def clear_refiner_masks(self):
+        """Clear all refiner masks."""
+        self._refiner_masks = []
+        self._hovered_mask_id = None
+        if self._on_refiner_masks_changed:
+            self._on_refiner_masks_changed(False)
+        self.queue_draw()
+
+    def get_selected_refiner_masks(self) -> list["DetectedMask"]:
+        """Get all selected refiner masks."""
+        return [m for m in self._refiner_masks if m.selected]
+
+    def get_refiner_masks(self) -> list["DetectedMask"]:
+        """Get all refiner masks."""
+        return self._refiner_masks
+
+    def toggle_mask_selection(self, mask_id: int):
+        """Toggle the selection state of a mask."""
+        for mask in self._refiner_masks:
+            if mask.id == mask_id:
+                mask.selected = not mask.selected
+                break
+        self.queue_draw()
+
+    def delete_mask(self, mask_id: int):
+        """Delete a mask by ID."""
+        self._refiner_masks = [m for m in self._refiner_masks if m.id != mask_id]
+        if self._hovered_mask_id == mask_id:
+            self._hovered_mask_id = None
+        if self._on_refiner_masks_changed:
+            self._on_refiner_masks_changed(len(self._refiner_masks) > 0)
+        self.queue_draw()
+
+    def has_refiner_masks(self) -> bool:
+        """Check if any refiner masks exist."""
+        return len(self._refiner_masks) > 0
+
+    @property
+    def refiner_mode(self) -> bool:
+        """Check if refiner mode is active."""
+        return self._refiner_mode
+
+    def set_on_refiner_masks_changed(self, callback: Optional[Callable[[bool], None]]):
+        """Set callback for when refiner masks change."""
+        self._on_refiner_masks_changed = callback
+
     def remove_with_mask(self) -> Optional[Image.Image]:
         """Remove the image content under the crop mask and fill with blended edge colors.
 
@@ -1930,3 +2156,37 @@ class ImageDisplayFrame(Gtk.Frame):
     def set_on_image_dropped(self, callback: Optional[Callable[[Path], None]]):
         """Set callback for when an image is dropped onto the display."""
         self._display.set_on_image_dropped(callback)
+
+    # Refiner mode methods (delegate to display)
+    def set_refiner_mode(self, enabled: bool):
+        """Enable or disable refiner mode."""
+        self._display.set_refiner_mode(enabled)
+
+    def set_refiner_masks(self, masks: list["DetectedMask"]):
+        """Set the detected refiner masks to display."""
+        self._display.set_refiner_masks(masks)
+
+    def clear_refiner_masks(self):
+        """Clear all refiner masks."""
+        self._display.clear_refiner_masks()
+
+    def get_selected_refiner_masks(self) -> list["DetectedMask"]:
+        """Get all selected refiner masks."""
+        return self._display.get_selected_refiner_masks()
+
+    def get_refiner_masks(self) -> list["DetectedMask"]:
+        """Get all refiner masks."""
+        return self._display.get_refiner_masks()
+
+    def has_refiner_masks(self) -> bool:
+        """Check if any refiner masks exist."""
+        return self._display.has_refiner_masks()
+
+    @property
+    def refiner_mode(self) -> bool:
+        """Check if refiner mode is active."""
+        return self._display.refiner_mode
+
+    def set_on_refiner_masks_changed(self, callback: Optional[Callable[[bool], None]]):
+        """Set callback for when refiner masks change."""
+        self._display.set_on_refiner_masks_changed(callback)

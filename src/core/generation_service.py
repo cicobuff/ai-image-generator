@@ -16,8 +16,10 @@ from src.core.model_manager import model_manager
 from src.core.gpu_manager import gpu_manager
 from src.backends.diffusers_backend import diffusers_backend, GenerationParams
 from src.backends.upscale_backend import upscale_backend
+from src.backends.segmentation_backend import DetectedMask
 from src.utils.constants import OUTPUT_FORMAT
 from src.utils.metadata import GenerationMetadata, save_image_with_metadata
+import numpy as np
 
 
 # Type alias for LoRA info: (path, name, weight)
@@ -809,6 +811,300 @@ class GenerationService:
                     GenerationResult(
                         success=True,
                         image=image,
+                        path=output_path,
+                        seed=params.seed,
+                    )
+                )
+
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._notify_generation_complete(
+                    GenerationResult(success=False, error=str(e))
+                )
+            finally:
+                self._set_state(GenerationState.IDLE)
+
+        # Submit to persistent worker pool to keep CUDA state warm between generations
+        self._current_future = self._worker_pool.submit(generate_thread)
+
+    def generate_refine(
+        self,
+        params: GenerationParams,
+        input_image: Image.Image,
+        masks: list[DetectedMask],
+        strength: float = 0.75,
+        upscale_model_path: Optional[str] = None,
+        output_dir: Optional[Path] = None,
+        loras: Optional[list[LoRAInfo]] = None,
+        padding: int = 32,
+    ) -> None:
+        """Start refinement generation in background thread.
+
+        This method refines selected regions of an image by:
+        1. Cropping each region with padding
+        2. Upscaling the cropped region
+        3. Inpainting the upscaled region
+        4. Downscaling back to original size
+        5. Compositing into the original image with feathered edges
+
+        Args:
+            params: Generation parameters (prompts, cfg, etc.)
+            input_image: Input image to refine
+            masks: List of DetectedMask objects to refine
+            strength: Inpainting strength (0-1)
+            upscale_model_path: Path to upscale model (optional)
+            output_dir: Output directory for saving images
+            loras: Optional list of LoRAs to apply
+            padding: Padding around mask bbox in pixels
+        """
+        if self.is_busy:
+            return
+
+        if not self.is_model_loaded:
+            self._notify_generation_complete(
+                GenerationResult(success=False, error="No model loaded")
+            )
+            return
+
+        if input_image is None:
+            self._notify_generation_complete(
+                GenerationResult(success=False, error="No input image provided")
+            )
+            return
+
+        if not masks:
+            self._notify_generation_complete(
+                GenerationResult(success=False, error="No masks provided")
+            )
+            return
+
+        self._cancel_requested = False
+        self._set_state(GenerationState.GENERATING)
+
+        def generate_thread():
+            try:
+                from PIL import ImageFilter
+
+                print(f"Refine generation thread started with {len(masks)} masks")
+
+                # Load LoRAs if specified
+                if loras:
+                    self._notify_progress("Loading LoRAs...", 0.0)
+                    if not diffusers_backend.load_loras(loras, self._notify_progress):
+                        print("Warning: Failed to load some LoRAs")
+                else:
+                    diffusers_backend.unload_loras()
+
+                # Get actual seed
+                actual_seed = diffusers_backend.get_actual_seed(params)
+                if params.seed == -1:
+                    params.seed = actual_seed
+
+                print(f"Using seed: {params.seed}")
+
+                # Work on a copy of the input image
+                result_image = input_image.copy()
+                img_width, img_height = result_image.size
+
+                total_masks = len(masks)
+
+                for mask_idx, mask in enumerate(masks):
+                    if self._cancel_requested:
+                        self._notify_generation_complete(
+                            GenerationResult(success=False, error="Generation cancelled")
+                        )
+                        return
+
+                    mask_progress_base = mask_idx / total_masks
+                    mask_progress_step = 1.0 / total_masks
+
+                    self._notify_progress(
+                        f"Refining region {mask_idx + 1}/{total_masks}: {mask.label}",
+                        mask_progress_base
+                    )
+
+                    # Extract bounding box with padding
+                    x1, y1, x2, y2 = mask.bbox
+                    x1_padded = max(0, x1 - padding)
+                    y1_padded = max(0, y1 - padding)
+                    x2_padded = min(img_width, x2 + padding)
+                    y2_padded = min(img_height, y2 + padding)
+
+                    # Crop region from current result image
+                    crop_region = result_image.crop((x1_padded, y1_padded, x2_padded, y2_padded))
+                    crop_width, crop_height = crop_region.size
+
+                    print(f"  Cropped region: {crop_width}x{crop_height} from ({x1_padded}, {y1_padded})")
+
+                    # Create mask for the cropped region
+                    # The mask is relative to the full image, so we need to extract the relevant portion
+                    mask_y_start = y1_padded
+                    mask_y_end = y2_padded
+                    mask_x_start = x1_padded
+                    mask_x_end = x2_padded
+
+                    # Extract mask portion
+                    mask_crop = mask.mask[mask_y_start:mask_y_end, mask_x_start:mask_x_end]
+
+                    # Convert to PIL mask (white = inpaint, black = keep)
+                    mask_pil = Image.fromarray((mask_crop * 255).astype(np.uint8), mode="L")
+
+                    # Dilate the mask slightly for better edge blending
+                    mask_pil = mask_pil.filter(ImageFilter.MaxFilter(5))
+
+                    # Upscale region (2x)
+                    self._notify_progress(
+                        f"Upscaling region {mask_idx + 1}/{total_masks}...",
+                        mask_progress_base + mask_progress_step * 0.2
+                    )
+
+                    upscale_factor = 2
+                    upscaled_region = None
+
+                    # Try Real-ESRGAN first
+                    if upscale_model_path:
+                        try:
+                            if not upscale_backend.is_loaded or upscale_backend._loaded_model_path != upscale_model_path:
+                                upscale_backend.set_device(diffusers_backend._device)
+                                upscale_backend.load_model(upscale_model_path, self._notify_progress)
+
+                            if upscale_backend.is_loaded:
+                                upscaled_region = upscale_backend.upscale(crop_region, self._notify_progress)
+                                upscale_factor = upscale_backend.scale
+                        except Exception as e:
+                            print(f"  Upscale backend failed: {e}, using Lanczos fallback")
+
+                    # Lanczos fallback
+                    if upscaled_region is None:
+                        upscaled_region = crop_region.resize(
+                            (crop_width * 2, crop_height * 2),
+                            Image.LANCZOS
+                        )
+                        upscale_factor = 2
+
+                    upscaled_width, upscaled_height = upscaled_region.size
+                    print(f"  Upscaled to: {upscaled_width}x{upscaled_height}")
+
+                    # Ensure dimensions are divisible by 8 for diffusion model
+                    def round_to_8(x):
+                        return ((x + 7) // 8) * 8
+
+                    # Ensure minimum size of 512x512 for proper inpainting quality
+                    MIN_INPAINT_SIZE = 512
+
+                    inpaint_width = round_to_8(max(upscaled_width, MIN_INPAINT_SIZE))
+                    inpaint_height = round_to_8(max(upscaled_height, MIN_INPAINT_SIZE))
+
+                    # If region is too small, scale up proportionally to meet minimum
+                    if upscaled_width < MIN_INPAINT_SIZE or upscaled_height < MIN_INPAINT_SIZE:
+                        scale_factor = max(MIN_INPAINT_SIZE / upscaled_width, MIN_INPAINT_SIZE / upscaled_height)
+                        inpaint_width = round_to_8(int(upscaled_width * scale_factor))
+                        inpaint_height = round_to_8(int(upscaled_height * scale_factor))
+                        print(f"  Region too small, scaling up by {scale_factor:.2f}x for quality")
+
+                    # Resize region and mask if needed
+                    if inpaint_width != upscaled_width or inpaint_height != upscaled_height:
+                        print(f"  Resizing for inpaint: {upscaled_width}x{upscaled_height} -> {inpaint_width}x{inpaint_height}")
+                        inpaint_region = upscaled_region.resize((inpaint_width, inpaint_height), Image.LANCZOS)
+                        inpaint_mask = mask_pil.resize((inpaint_width, inpaint_height), Image.NEAREST)
+                    else:
+                        inpaint_region = upscaled_region
+                        inpaint_mask = mask_pil.resize((upscaled_width, upscaled_height), Image.NEAREST)
+
+                    # Run inpainting on upscaled region
+                    self._notify_progress(
+                        f"Inpainting region {mask_idx + 1}/{total_masks}...",
+                        mask_progress_base + mask_progress_step * 0.4
+                    )
+
+                    # Create params for this region
+                    region_params = GenerationParams(
+                        prompt=params.prompt,
+                        negative_prompt=params.negative_prompt,
+                        width=inpaint_width,
+                        height=inpaint_height,
+                        steps=params.steps,
+                        cfg_scale=params.cfg_scale,
+                        seed=params.seed + mask_idx,  # Different seed per mask
+                        sampler=params.sampler,
+                        scheduler=params.scheduler,
+                    )
+
+                    # Calculate effective steps for progress
+                    effective_steps = max(1, int(params.steps * strength))
+                    self._notify_step_progress(0, effective_steps)
+
+                    inpainted_region = diffusers_backend.generate_inpaint(
+                        region_params,
+                        input_image=inpaint_region,
+                        mask_image=inpaint_mask,
+                        strength=strength,
+                        progress_callback=self._notify_step_progress,
+                    )
+
+                    if inpainted_region is None:
+                        print(f"  Warning: Inpainting failed for region {mask_idx + 1}")
+                        continue
+
+                    # Resize back to original upscaled dimensions if we resized for inpaint
+                    if inpaint_width != upscaled_width or inpaint_height != upscaled_height:
+                        inpainted_region = inpainted_region.resize(
+                            (upscaled_width, upscaled_height),
+                            Image.LANCZOS
+                        )
+
+                    # Downscale refined region back to original size
+                    self._notify_progress(
+                        f"Compositing region {mask_idx + 1}/{total_masks}...",
+                        mask_progress_base + mask_progress_step * 0.8
+                    )
+
+                    refined_region = inpainted_region.resize(
+                        (crop_width, crop_height),
+                        Image.LANCZOS
+                    )
+
+                    # Create feathered mask for blending
+                    feather_radius = max(5, padding // 4)
+                    feathered_mask = mask_pil.filter(
+                        ImageFilter.GaussianBlur(radius=feather_radius)
+                    )
+
+                    # Composite refined region into result image
+                    # First paste the refined region
+                    temp_result = result_image.copy()
+                    temp_result.paste(refined_region, (x1_padded, y1_padded))
+
+                    # Then blend using the feathered mask
+                    # Convert grayscale mask to match image mode
+                    if result_image.mode == "RGB":
+                        # Create full-size mask
+                        full_mask = Image.new("L", (img_width, img_height), 0)
+                        full_mask.paste(feathered_mask, (x1_padded, y1_padded))
+
+                        result_image = Image.composite(temp_result, result_image, full_mask)
+                    else:
+                        result_image = temp_result
+
+                    print(f"  Region {mask_idx + 1} composited successfully")
+
+                # Save final result
+                self._notify_progress("Saving refined image...", 0.98)
+                output_path = self._save_image(
+                    result_image,
+                    params,
+                    upscale_enabled=False,
+                    is_inpaint=True,  # Mark as inpaint for metadata
+                    inpaint_strength=strength,
+                    output_dir=output_dir,
+                )
+
+                self._notify_progress("Refinement complete", 1.0)
+                self._notify_generation_complete(
+                    GenerationResult(
+                        success=True,
+                        image=result_image,
                         path=output_path,
                         seed=params.seed,
                     )

@@ -132,8 +132,9 @@ class GenerationProgressWidget(Gtk.Box):
             self._step_container.remove(row)
         self._gpu_progress_rows.clear()
 
-        # Restore single step bar
-        self._step_container.append(self._single_step_box)
+        # Restore single step bar only if not already in container
+        if self._single_step_box.get_parent() is None:
+            self._step_container.append(self._single_step_box)
 
     def set_gpu_step_progress(self, gpu_idx: int, current: int, total: int):
         """Set step progress for a specific GPU.

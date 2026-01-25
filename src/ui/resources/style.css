@@ -628,3 +628,74 @@ dropdown.purple-button > button > box > image {
 .generation-progress-bar.generating progress {
     background-color: #4CAF50;
 }
+
+/* Refiner mode toggle button - light yellow */
+.refiner-toggle {
+    background: #FFF9C4;
+    color: #F57F17;
+    border: none;
+}
+
+.refiner-toggle:hover {
+    background: #FFF59D;
+}
+
+.refiner-toggle:checked {
+    background: #FFCA28;
+    color: white;
+}
+
+.refiner-toggle:checked:hover {
+    background: #FFD54F;
+}
+
+/* Yellow toggle button style (Refiner tools) */
+.yellow-toggle {
+    background: #FFCA28;
+    color: white;
+    border: none;
+}
+
+.yellow-toggle:hover {
+    background: #FFD54F;
+}
+
+.yellow-toggle:checked {
+    background: #F9A825;
+    color: white;
+}
+
+.yellow-toggle:checked:hover {
+    background: #FBC02D;
+}
+
+.yellow-toggle:disabled {
+    background: alpha(#FFCA28, 0.4);
+    color: alpha(white, 0.6);
+}
+
+/* Yellow button style (Refiner actions) */
+.yellow-button {
+    background: #FFCA28;
+    color: white;
+    border: none;
+}
+
+.yellow-button:hover {
+    background: #FFD54F;
+}
+
+.yellow-button:active {
+    background: #F9A825;
+}
+
+.yellow-button:disabled {
+    background: alpha(#FFCA28, 0.4);
+    color: alpha(white, 0.6);
+}
+
+/* Center panel in refiner mode - inner yellow border */
+.center-panel-refiner-mode {
+    box-shadow: inset 0 0 0 3px #FFCA28;
+    border-radius: 4px;
+}

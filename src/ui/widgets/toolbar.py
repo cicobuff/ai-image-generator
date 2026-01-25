@@ -30,6 +30,12 @@ class CropTool(Enum):
     DRAW = "draw"  # Draw crop region
 
 
+class RefinerTool(Enum):
+    """Refiner mask selection tools."""
+    NONE = "none"
+    SELECT = "select"  # Select/deselect detected masks
+
+
 class Toolbar(Gtk.Box):
     """Main toolbar with Load, Clear, and Generate buttons."""
 
@@ -55,6 +61,10 @@ class Toolbar(Gtk.Box):
         on_crop_image: Optional[Callable[[], None]] = None,
         on_crop_size_changed: Optional[Callable[[int, int], None]] = None,
         on_remove_with_mask: Optional[Callable[[], None]] = None,
+        on_refiner_mode_changed: Optional[Callable[[bool], None]] = None,
+        on_refiner_detect: Optional[Callable[[], None]] = None,
+        on_clear_refiner_masks: Optional[Callable[[], None]] = None,
+        on_generate_refine: Optional[Callable[[], None]] = None,
     ):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self._on_load = on_load
@@ -77,6 +87,10 @@ class Toolbar(Gtk.Box):
         self._on_crop_image = on_crop_image
         self._on_crop_size_changed = on_crop_size_changed
         self._on_remove_with_mask = on_remove_with_mask
+        self._on_refiner_mode_changed = on_refiner_mode_changed
+        self._on_refiner_detect = on_refiner_detect
+        self._on_clear_refiner_masks = on_clear_refiner_masks
+        self._on_generate_refine = on_generate_refine
 
         self._inpaint_mode = False
         self._outpaint_mode = False
@@ -88,6 +102,9 @@ class Toolbar(Gtk.Box):
         self._model_loaded = False
         self._upscale_enabled = False
         self._has_image = False
+        self._refiner_mode = False
+        self._current_refiner_tool = RefinerTool.NONE
+        self._has_refiner_masks = False
 
         self.add_css_class("toolbar")
         self._build_ui()
@@ -393,6 +410,69 @@ class Toolbar(Gtk.Box):
         self._crop_size_dropdown.set_visible(False)
         self.append(self._crop_size_dropdown)
 
+        # Separator before refiner
+        self._refiner_separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        self._refiner_separator.set_margin_start(8)
+        self._refiner_separator.set_margin_end(8)
+        self._refiner_separator.set_visible(False)
+        self.append(self._refiner_separator)
+
+        # Refiner Mode toggle with icon
+        self._refiner_toggle = Gtk.ToggleButton()
+        refiner_mode_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        refiner_mode_icon = Gtk.Image.new_from_icon_name("find-location-symbolic")
+        refiner_mode_label = Gtk.Label(label="Refiner Mode")
+        refiner_mode_box.append(refiner_mode_icon)
+        refiner_mode_box.append(refiner_mode_label)
+        self._refiner_toggle.set_child(refiner_mode_box)
+        self._refiner_toggle.set_tooltip_text("Enable refiner mode to detect and refine image regions")
+        self._refiner_toggle.add_css_class("refiner-toggle")
+        self._refiner_toggle.connect("toggled", self._on_refiner_toggled)
+        self._refiner_toggle.set_visible(False)
+        self.append(self._refiner_toggle)
+
+        # Detect button with icon (visible in refiner mode)
+        self._detect_button = Gtk.Button()
+        detect_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        detect_icon = Gtk.Image.new_from_icon_name("system-search-symbolic")
+        detect_label = Gtk.Label(label="Detect")
+        detect_box.append(detect_icon)
+        detect_box.append(detect_label)
+        self._detect_button.set_child(detect_box)
+        self._detect_button.set_tooltip_text("Detect objects in the image using text prompt")
+        self._detect_button.add_css_class("yellow-button")
+        self._detect_button.connect("clicked", self._on_detect_clicked)
+        self._detect_button.set_visible(False)
+        self.append(self._detect_button)
+
+        # Clear Refiner Masks button with icon (visible in refiner mode)
+        self._clear_refiner_masks_button = Gtk.Button()
+        clear_refiner_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        clear_refiner_icon = Gtk.Image.new_from_icon_name("edit-clear-symbolic")
+        clear_refiner_label = Gtk.Label(label="Clear Masks")
+        clear_refiner_box.append(clear_refiner_icon)
+        clear_refiner_box.append(clear_refiner_label)
+        self._clear_refiner_masks_button.set_child(clear_refiner_box)
+        self._clear_refiner_masks_button.set_tooltip_text("Clear all detected masks")
+        self._clear_refiner_masks_button.add_css_class("yellow-button")
+        self._clear_refiner_masks_button.connect("clicked", self._on_clear_refiner_masks_clicked)
+        self._clear_refiner_masks_button.set_visible(False)
+        self.append(self._clear_refiner_masks_button)
+
+        # Generate Refine button with icon (visible in refiner mode)
+        self._generate_refine_button = Gtk.Button()
+        refine_gen_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        refine_gen_icon = Gtk.Image.new_from_icon_name("media-playback-start-symbolic")
+        refine_gen_label = Gtk.Label(label="Generate Refine")
+        refine_gen_box.append(refine_gen_icon)
+        refine_gen_box.append(refine_gen_label)
+        self._generate_refine_button.set_child(refine_gen_box)
+        self._generate_refine_button.add_css_class("yellow-button")
+        self._generate_refine_button.set_tooltip_text("Refine selected regions using diffusion inpainting")
+        self._generate_refine_button.connect("clicked", self._on_generate_refine_clicked)
+        self._generate_refine_button.set_visible(False)
+        self.append(self._generate_refine_button)
+
         # Cancel button (hidden by default)
         self._cancel_button = Gtk.Button(label="Cancel")
         self._cancel_button.add_css_class("destructive-action")
@@ -461,6 +541,15 @@ class Toolbar(Gtk.Box):
                 self._update_crop_ui()
                 if self._on_crop_mode_changed:
                     self._on_crop_mode_changed(False)
+            if self._refiner_mode:
+                self._refiner_toggle.handler_block_by_func(self._on_refiner_toggled)
+                self._refiner_toggle.set_active(False)
+                self._refiner_toggle.handler_unblock_by_func(self._on_refiner_toggled)
+                self._refiner_mode = False
+                self._current_refiner_tool = RefinerTool.NONE
+                self._update_refiner_ui()
+                if self._on_refiner_mode_changed:
+                    self._on_refiner_mode_changed(False)
 
         self._update_inpaint_ui()
         if self._on_inpaint_mode_changed:
@@ -536,6 +625,15 @@ class Toolbar(Gtk.Box):
                 self._update_crop_ui()
                 if self._on_crop_mode_changed:
                     self._on_crop_mode_changed(False)
+            if self._refiner_mode:
+                self._refiner_toggle.handler_block_by_func(self._on_refiner_toggled)
+                self._refiner_toggle.set_active(False)
+                self._refiner_toggle.handler_unblock_by_func(self._on_refiner_toggled)
+                self._refiner_mode = False
+                self._current_refiner_tool = RefinerTool.NONE
+                self._update_refiner_ui()
+                if self._on_refiner_mode_changed:
+                    self._on_refiner_mode_changed(False)
 
         self._update_outpaint_ui()
         if self._on_outpaint_mode_changed:
@@ -593,6 +691,15 @@ class Toolbar(Gtk.Box):
                 self._update_outpaint_ui()
                 if self._on_outpaint_mode_changed:
                     self._on_outpaint_mode_changed(False)
+            if self._refiner_mode:
+                self._refiner_toggle.handler_block_by_func(self._on_refiner_toggled)
+                self._refiner_toggle.set_active(False)
+                self._refiner_toggle.handler_unblock_by_func(self._on_refiner_toggled)
+                self._refiner_mode = False
+                self._current_refiner_tool = RefinerTool.NONE
+                self._update_refiner_ui()
+                if self._on_refiner_mode_changed:
+                    self._on_refiner_mode_changed(False)
 
         self._update_crop_ui()
         if self._on_crop_mode_changed:
@@ -652,6 +759,77 @@ class Toolbar(Gtk.Box):
 
         # Reset dropdown to placeholder after selection
         dropdown.set_selected(0)
+
+    def _on_refiner_toggled(self, button):
+        """Handle Refiner Mode toggle."""
+        self._refiner_mode = button.get_active()
+
+        # Turn off other modes when this mode is activated
+        if self._refiner_mode:
+            if self._inpaint_mode:
+                self._inpaint_toggle.handler_block_by_func(self._on_inpaint_toggled)
+                self._inpaint_toggle.set_active(False)
+                self._inpaint_toggle.handler_unblock_by_func(self._on_inpaint_toggled)
+                self._inpaint_mode = False
+                self._current_tool = InpaintTool.NONE
+                self._rect_mask_button.set_active(False)
+                self._paint_mask_button.set_active(False)
+                self._update_inpaint_ui()
+                if self._on_inpaint_mode_changed:
+                    self._on_inpaint_mode_changed(False)
+            if self._outpaint_mode:
+                self._outpaint_toggle.handler_block_by_func(self._on_outpaint_toggled)
+                self._outpaint_toggle.set_active(False)
+                self._outpaint_toggle.handler_unblock_by_func(self._on_outpaint_toggled)
+                self._outpaint_mode = False
+                self._current_outpaint_tool = OutpaintTool.NONE
+                self._outpaint_mask_button.set_active(False)
+                self._update_outpaint_ui()
+                if self._on_outpaint_mode_changed:
+                    self._on_outpaint_mode_changed(False)
+            if self._crop_mode:
+                self._crop_toggle.handler_block_by_func(self._on_crop_toggled)
+                self._crop_toggle.set_active(False)
+                self._crop_toggle.handler_unblock_by_func(self._on_crop_toggled)
+                self._crop_mode = False
+                self._current_crop_tool = CropTool.NONE
+                self._crop_mask_button.set_active(False)
+                self._update_crop_ui()
+                if self._on_crop_mode_changed:
+                    self._on_crop_mode_changed(False)
+
+        self._update_refiner_ui()
+        if self._on_refiner_mode_changed:
+            self._on_refiner_mode_changed(self._refiner_mode)
+        # Reset tool when exiting refiner mode
+        if not self._refiner_mode:
+            self._current_refiner_tool = RefinerTool.NONE
+
+    def _on_detect_clicked(self, button):
+        """Handle Detect button click."""
+        if self._on_refiner_detect:
+            self._on_refiner_detect()
+
+    def _on_clear_refiner_masks_clicked(self, button):
+        """Handle Clear Refiner Masks button click."""
+        if self._on_clear_refiner_masks:
+            self._on_clear_refiner_masks()
+        self._has_refiner_masks = False
+
+    def _on_generate_refine_clicked(self, button):
+        """Handle Generate Refine button click."""
+        if self._on_generate_refine:
+            self._on_generate_refine()
+
+    def _update_refiner_ui(self):
+        """Update visibility of refiner-related buttons."""
+        visible = self._refiner_mode
+        self._detect_button.set_visible(visible)
+        self._clear_refiner_masks_button.set_visible(visible)
+        self._generate_refine_button.set_visible(visible)
+        # Disable normal generation buttons in refiner mode (keep visible)
+        self._generate_button.set_sensitive(not visible)
+        self._img2img_button.set_sensitive(not visible)
 
     def _update_crop_ui(self):
         """Update visibility of crop-related buttons."""
@@ -714,7 +892,12 @@ class Toolbar(Gtk.Box):
             self._clear_crop_mask_button.set_sensitive(True)
             self._crop_image_button.set_sensitive(True)
             self._remove_with_mask_button.set_sensitive(True)
-            # Restore state based on inpaint/outpaint/crop mode
+            # Restore refiner controls sensitivity
+            self._refiner_toggle.set_sensitive(self._has_image)
+            self._detect_button.set_sensitive(True)
+            self._clear_refiner_masks_button.set_sensitive(True)
+            self._generate_refine_button.set_sensitive(True)
+            # Restore state based on inpaint/outpaint/crop/refiner mode
             if self._inpaint_mode:
                 # Keep Generate/Img2Img visible but disabled in inpaint mode
                 self._generate_button.set_sensitive(False)
@@ -737,6 +920,13 @@ class Toolbar(Gtk.Box):
                 self._crop_mask_button.set_visible(True)
                 self._clear_crop_mask_button.set_visible(True)
                 self._crop_image_button.set_visible(True)
+            elif self._refiner_mode:
+                # Keep Generate/Img2Img visible but disabled in refiner mode
+                self._generate_button.set_sensitive(False)
+                self._img2img_button.set_sensitive(False)
+                self._detect_button.set_visible(True)
+                self._clear_refiner_masks_button.set_visible(True)
+                self._generate_refine_button.set_visible(True)
             else:
                 # Restore sensitivity when not in edit mode
                 self._generate_button.set_sensitive(True)
@@ -772,6 +962,10 @@ class Toolbar(Gtk.Box):
             self._clear_crop_mask_button.set_sensitive(False)
             self._crop_image_button.set_sensitive(False)
             self._remove_with_mask_button.set_sensitive(False)
+            self._refiner_toggle.set_sensitive(False)
+            self._detect_button.set_sensitive(False)
+            self._clear_refiner_masks_button.set_sensitive(False)
+            self._generate_refine_button.set_sensitive(False)
             self._cancel_button.set_visible(True)
 
         elif state == GenerationState.CANCELLING:
@@ -783,6 +977,7 @@ class Toolbar(Gtk.Box):
             self._inpaint_toggle.set_sensitive(False)
             self._outpaint_toggle.set_sensitive(False)
             self._crop_toggle.set_sensitive(False)
+            self._refiner_toggle.set_sensitive(False)
             self._cancel_button.set_sensitive(False)
 
     def set_model_loaded(self, loaded: bool):
@@ -794,12 +989,13 @@ class Toolbar(Gtk.Box):
         """Update sensitivity of all generation-related buttons based on model loaded state and edit modes."""
         loaded = self._model_loaded
         # Generate buttons are always active - they will auto-load models if needed
-        # But they should be disabled in inpaint/outpaint/crop mode (keep visible though)
-        in_edit_mode = self._inpaint_mode or self._outpaint_mode or self._crop_mode
+        # But they should be disabled in inpaint/outpaint/crop/refiner mode (keep visible though)
+        in_edit_mode = self._inpaint_mode or self._outpaint_mode or self._crop_mode or self._refiner_mode
         self._generate_button.set_sensitive(not in_edit_mode)
         self._img2img_button.set_sensitive(not in_edit_mode)
         self._generate_inpaint_button.set_sensitive(True)
         self._generate_outpaint_button.set_sensitive(True)
+        self._generate_refine_button.set_sensitive(True)
         # Clear only makes sense when model is loaded
         self._clear_button.set_sensitive(loaded)
         # Edit toggles are based on image presence, not model loaded (handled in set_has_image)
@@ -837,6 +1033,14 @@ class Toolbar(Gtk.Box):
         # If no image and crop mode was on, turn it off
         if not has_image and self._crop_mode:
             self._crop_toggle.set_active(False)
+
+        # Show/hide refiner toggle based on image presence
+        self._refiner_separator.set_visible(has_image)
+        self._refiner_toggle.set_visible(has_image)
+        self._refiner_toggle.set_sensitive(has_image)
+        # If no image and refiner mode was on, turn it off
+        if not has_image and self._refiner_mode:
+            self._refiner_toggle.set_active(False)
 
     @property
     def inpaint_mode(self) -> bool:
@@ -894,6 +1098,25 @@ class Toolbar(Gtk.Box):
     def clear_progress(self):
         """Clear progress display (deprecated - use GenerationProgressWidget)."""
         pass
+
+    @property
+    def refiner_mode(self) -> bool:
+        """Check if refiner mode is active."""
+        return self._refiner_mode
+
+    @property
+    def current_refiner_tool(self) -> RefinerTool:
+        """Get the current refiner tool."""
+        return self._current_refiner_tool
+
+    def exit_refiner_mode(self):
+        """Exit refiner mode programmatically."""
+        if self._refiner_mode:
+            self._refiner_toggle.set_active(False)
+
+    def set_has_refiner_masks(self, has_masks: bool):
+        """Update state based on whether refiner masks exist."""
+        self._has_refiner_masks = has_masks
 
     def set_upscale_enabled(self, enabled: bool, has_image: bool = True):
         """Update upscale button sensitivity based on upscaling enabled state and image presence."""

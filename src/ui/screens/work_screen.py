@@ -24,8 +24,9 @@ from src.ui.widgets.toolbar import Toolbar
 from src.ui.widgets.upscale_settings import UpscaleSettingsWidget
 from src.ui.widgets.batch_settings import BatchSettingsWidget
 from src.ui.widgets.generation_progress import GenerationProgressWidget
-from src.ui.widgets.toolbar import InpaintTool, OutpaintTool, CropTool
+from src.ui.widgets.toolbar import InpaintTool, OutpaintTool, CropTool, RefinerTool
 from src.ui.widgets.image_display import MaskTool, OutpaintTool as ImageOutpaintTool
+from src.backends.segmentation_backend import segmentation_backend, DetectedMask
 from src.ui.widgets.lora_selector import LoRASelectorPanel
 from src.ui.widgets.info_helper import SectionHeader, add_hover_tooltip, SECTION_INFO, LABEL_TOOLTIPS
 from src.ui.widgets.collapsible_panel import PanedCollapseButton
@@ -81,6 +82,10 @@ class WorkScreen(Gtk.Box):
             on_crop_image=self._on_crop_image,
             on_crop_size_changed=self._on_crop_size_changed,
             on_remove_with_mask=self._on_remove_with_mask,
+            on_refiner_mode_changed=self._on_refiner_mode_changed,
+            on_refiner_detect=self._on_refiner_detect,
+            on_clear_refiner_masks=self._on_clear_refiner_masks,
+            on_generate_refine=self._on_generate_refine,
         )
         self.append(self._toolbar)
 
@@ -655,6 +660,10 @@ class WorkScreen(Gtk.Box):
                 self._do_img2img()
             elif pending == "inpaint":
                 self._do_generate_inpaint()
+            elif pending == "refine":
+                selected_masks = self._image_display.get_selected_refiner_masks()
+                if selected_masks:
+                    self._do_generate_refine(selected_masks)
         else:
             self._pending_generation = None
             self._status_bar.set_text(f"Optimization failed: {error or 'Unknown error'}")
@@ -1773,6 +1782,227 @@ class WorkScreen(Gtk.Box):
         except Exception as e:
             self._status_bar.set_text(f"Error saving image: {e}")
 
+    # Refiner mode handlers
+    def _on_refiner_mode_changed(self, enabled: bool):
+        """Handle Refiner Mode toggle."""
+        self._image_display.set_refiner_mode(enabled)
+
+        # Update center panel style
+        center_panel = self._image_display.get_parent().get_parent()
+        if enabled:
+            center_panel.add_css_class("center-panel-refiner-mode")
+            self._status_bar.set_text("Refiner Mode: Click Detect to find objects")
+        else:
+            center_panel.remove_css_class("center-panel-refiner-mode")
+            self._image_display.clear_refiner_masks()
+            self._status_bar.set_text("Refiner Mode disabled")
+
+    def _on_refiner_detect(self):
+        """Handle Detect button click - show text prompt dialog."""
+        if not self._image_display.has_image():
+            self._status_bar.set_text("Please load an image first")
+            return
+
+        # Create a dialog to get the text prompt
+        dialog = Gtk.Dialog(
+            title="Detect Objects",
+            transient_for=self.get_root(),
+            modal=True,
+        )
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Detect", Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+
+        # Content area
+        content = dialog.get_content_area()
+        content.set_spacing(12)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+
+        # Label
+        label = Gtk.Label(label="Enter what to detect (e.g., 'face', 'hand', 'person'):")
+        label.set_halign(Gtk.Align.START)
+        content.append(label)
+
+        # Text entry
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("face")
+        entry.set_text("face")  # Default
+        entry.set_activates_default(True)
+        content.append(entry)
+
+        # Threshold slider
+        threshold_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        threshold_label = Gtk.Label(label="Threshold:")
+        threshold_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.1, 1.0, 0.05)
+        threshold_scale.set_value(0.5)
+        threshold_scale.set_hexpand(True)
+        threshold_box.append(threshold_label)
+        threshold_box.append(threshold_scale)
+        content.append(threshold_box)
+
+        def on_response(dialog, response_id):
+            if response_id == Gtk.ResponseType.OK:
+                text_prompt = entry.get_text().strip()
+                threshold = threshold_scale.get_value()
+                if text_prompt:
+                    dialog.close()
+                    self._run_detection(text_prompt, threshold)
+                else:
+                    self._status_bar.set_text("Please enter a text prompt")
+            else:
+                dialog.close()
+
+        dialog.connect("response", on_response)
+        dialog.present()
+
+    def _run_detection(self, text_prompt: str, threshold: float = 0.5):
+        """Run object detection in background thread."""
+        self._status_bar.set_text(f"Detecting '{text_prompt}'...")
+        self._toolbar.set_state(GenerationState.LOADING)
+
+        # Set up progress widget for detection
+        self._progress_widget.set_batch_progress(0, 1)
+        self._progress_widget.set_status("Loading SAM3...")
+        self._progress_widget.set_step_fraction(0.0)
+        self._progress_widget.set_generating(True)
+
+        image = self._image_display.get_pil_image()
+        if image is None:
+            self._status_bar.set_text("No image loaded")
+            self._toolbar.set_state(GenerationState.IDLE)
+            self._progress_widget.reset()
+            return
+
+        def update_progress(msg, prog):
+            """Update both status bar and progress widget."""
+            GLib.idle_add(self._status_bar.set_text, msg)
+            GLib.idle_add(self._progress_widget.set_status, msg)
+            GLib.idle_add(self._progress_widget.set_step_fraction, prog)
+
+        def detect_thread():
+            try:
+                # Load model if needed
+                if not segmentation_backend.is_loaded:
+                    success = segmentation_backend.load_model(
+                        progress_callback=update_progress
+                    )
+                    if not success:
+                        GLib.idle_add(self._on_detection_complete, [], "Failed to load segmentation model")
+                        return
+
+                # Run detection
+                masks = segmentation_backend.detect(
+                    image,
+                    text_prompt,
+                    threshold=threshold,
+                    progress_callback=update_progress
+                )
+
+                GLib.idle_add(self._on_detection_complete, masks, None)
+
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                GLib.idle_add(self._on_detection_complete, [], str(e))
+
+        thread = threading.Thread(target=detect_thread, daemon=True)
+        thread.start()
+
+    def _on_detection_complete(self, masks: list[DetectedMask], error: str = None):
+        """Handle detection completion."""
+        self._toolbar.set_state(GenerationState.IDLE)
+        self._progress_widget.set_generating(False)
+        self._progress_widget.reset()
+
+        if error:
+            self._status_bar.set_text(f"Detection error: {error}")
+            return
+
+        if not masks:
+            self._status_bar.set_text("No objects detected")
+            return
+
+        # Set masks on display
+        self._image_display.set_refiner_masks(masks)
+        self._toolbar.set_has_refiner_masks(True)
+        self._status_bar.set_text(f"Detected {len(masks)} region(s). Click to toggle, double-click to delete.")
+
+    def _on_clear_refiner_masks(self):
+        """Handle Clear Refiner Masks button click."""
+        self._image_display.clear_refiner_masks()
+        self._toolbar.set_has_refiner_masks(False)
+        self._status_bar.set_text("Refiner masks cleared")
+
+    def _on_generate_refine(self):
+        """Handle Generate Refine button click."""
+        # Validate we have selected masks
+        selected_masks = self._image_display.get_selected_refiner_masks()
+        if not selected_masks:
+            self._status_bar.set_text("Please select at least one mask to refine")
+            return
+
+        # Get prompts
+        positive = self._prompt_section.get_positive_prompt()
+        if not positive.strip():
+            self._status_bar.set_text("Please enter a refinement prompt")
+            return
+
+        # Check if a checkpoint is selected
+        if not model_manager.loaded.checkpoint:
+            self._status_bar.set_text("Please select a checkpoint first")
+            return
+
+        # Ensure model is loaded
+        if not self._ensure_model_ready("refine"):
+            return
+
+        self._do_generate_refine(selected_masks)
+
+    def _do_generate_refine(self, masks: list[DetectedMask]):
+        """Perform the actual refinement generation."""
+        positive = self._prompt_section.get_positive_prompt()
+        negative = self._prompt_section.get_negative_prompt()
+        params = self._params_widget.get_params(positive, negative)
+        strength = self._params_widget.get_strength()
+
+        input_image = self._image_display.get_pil_image()
+        if input_image is None:
+            self._status_bar.set_text("No image loaded")
+            return
+
+        # Unload segmentation model to free VRAM
+        if segmentation_backend.is_loaded:
+            segmentation_backend.unload_model()
+            self._status_bar.set_text("Unloaded segmentation model for generation...")
+
+        # Set up progress widget
+        self._progress_widget.set_batch_progress(0, len(masks))
+        self._progress_widget.set_status("Starting refinement...")
+        self._progress_widget.set_generating(True)
+
+        # Get upscale settings
+        upscale_model_path = self._upscale_widget.selected_model_path
+        upscale_model_name = self._upscale_widget.selected_model_name
+
+        # Get output directory from gallery
+        output_dir = self._thumbnail_gallery.get_output_directory()
+
+        # Get active LoRAs
+        loras = self._get_active_loras()
+
+        generation_service.generate_refine(
+            params=params,
+            input_image=input_image,
+            masks=masks,
+            strength=strength,
+            upscale_model_path=upscale_model_path,
+            output_dir=output_dir,
+            loras=loras if loras else None,
+        )
+
         # Update toolbar has_image state
         self._toolbar.set_has_image(True)
         self._update_upscale_button_state()
@@ -1798,6 +2028,12 @@ class WorkScreen(Gtk.Box):
                         self._do_generate_inpaint()
                     elif pending == "outpaint":
                         self._do_generate_outpaint()
+                    elif pending == "refine":
+                        selected_masks = self._image_display.get_selected_refiner_masks()
+                        if selected_masks:
+                            self._do_generate_refine(selected_masks)
+                        else:
+                            self._status_bar.set_text("No masks selected for refinement")
                 else:
                     self._status_bar.set_text("Model loading failed - generation cancelled")
 
