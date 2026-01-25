@@ -131,6 +131,7 @@ class AIImageGeneratorApp(Gtk.Application):
             # Prompt font sizes
             window_config.positive_prompt_font_size = panel_positions.get("positive_prompt_font_size", 0)
             window_config.negative_prompt_font_size = panel_positions.get("negative_prompt_font_size", 0)
+            window_config.refiner_prompt_font_size = panel_positions.get("refiner_prompt_font_size", 0)
             # Panel collapsed states
             window_config.left_panel_collapsed = panel_positions.get("left_panel_collapsed", False)
             window_config.right_panel_collapsed = panel_positions.get("right_panel_collapsed", False)
