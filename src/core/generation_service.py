@@ -838,6 +838,7 @@ class GenerationService:
         output_dir: Optional[Path] = None,
         loras: Optional[list[LoRAInfo]] = None,
         padding: int = 32,
+        original_prompt: Optional[str] = None,
     ) -> None:
         """Start refinement generation in background thread.
 
@@ -849,7 +850,7 @@ class GenerationService:
         5. Compositing into the original image with feathered edges
 
         Args:
-            params: Generation parameters (prompts, cfg, etc.)
+            params: Generation parameters (prompts for generation, cfg, etc.)
             input_image: Input image to refine
             masks: List of DetectedMask objects to refine
             strength: Inpainting strength (0-1)
@@ -857,6 +858,7 @@ class GenerationService:
             output_dir: Output directory for saving images
             loras: Optional list of LoRAs to apply
             padding: Padding around mask bbox in pixels
+            original_prompt: Original positive prompt to combine with refiner prompt for metadata
         """
         if self.is_busy:
             return
@@ -1091,9 +1093,31 @@ class GenerationService:
 
                 # Save final result
                 self._notify_progress("Saving refined image...", 0.98)
+
+                # Create params copy with combined prompt for metadata
+                # This preserves the original prompt + refiner prompt in saved image metadata
+                save_params = GenerationParams(
+                    prompt=params.prompt,  # Will be modified below
+                    negative_prompt=params.negative_prompt,
+                    width=params.width,
+                    height=params.height,
+                    steps=params.steps,
+                    cfg_scale=params.cfg_scale,
+                    seed=params.seed,
+                    sampler=params.sampler,
+                    scheduler=params.scheduler,
+                )
+
+                # Combine original prompt with refiner prompt for metadata
+                if original_prompt and params.prompt:
+                    save_params.prompt = f"{original_prompt}, [Refiner: {params.prompt}]"
+                elif original_prompt:
+                    save_params.prompt = original_prompt
+                # else: keep params.prompt as-is (refiner prompt only)
+
                 output_path = self._save_image(
                     result_image,
-                    params,
+                    save_params,
                     upscale_enabled=False,
                     is_inpaint=True,  # Mark as inpaint for metadata
                     inpaint_strength=strength,

@@ -60,6 +60,7 @@ class WindowConfig:
     # Prompt font sizes (in points, 0 means use default)
     positive_prompt_font_size: int = 0
     negative_prompt_font_size: int = 0
+    refiner_prompt_font_size: int = 0
     # Panel collapsed states
     left_panel_collapsed: bool = False
     right_panel_collapsed: bool = False

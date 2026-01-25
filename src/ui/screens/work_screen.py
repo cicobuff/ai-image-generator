@@ -354,6 +354,7 @@ class WorkScreen(Gtk.Box):
         self._prompt_section.set_font_sizes(
             window_config.positive_prompt_font_size,
             window_config.negative_prompt_font_size,
+            window_config.refiner_prompt_font_size,
         )
 
         return center_box
@@ -1966,10 +1967,13 @@ class WorkScreen(Gtk.Box):
 
     def _do_generate_refine(self, masks: list[DetectedMask]):
         """Perform the actual refinement generation."""
-        # Use refiner prompt instead of positive prompt
-        positive = self._prompt_section.get_refiner_prompt()
+        # Use refiner prompt for generation, pass original prompt separately for metadata
+        refiner_prompt = self._prompt_section.get_refiner_prompt()
+        original_prompt = self._prompt_section.get_positive_prompt()
         negative = self._prompt_section.get_negative_prompt()
-        params = self._params_widget.get_params(positive, negative)
+
+        # Use refiner prompt for generation params
+        params = self._params_widget.get_params(refiner_prompt, negative)
         strength = self._params_widget.get_strength()
 
         input_image = self._image_display.get_pil_image()
@@ -2005,6 +2009,7 @@ class WorkScreen(Gtk.Box):
             upscale_model_path=upscale_model_path,
             output_dir=output_dir,
             loras=loras if loras else None,
+            original_prompt=original_prompt,
         )
 
         # Update toolbar has_image state
@@ -2066,6 +2071,7 @@ class WorkScreen(Gtk.Box):
             # The user can continue to refine with the same mask
             in_inpaint_mode = self._image_display.inpaint_mode
             in_outpaint_mode = self._image_display.outpaint_mode
+            in_refiner_mode = self._image_display.refiner_mode
 
             # For outpaint mode, clear masks before setting new image
             # since the new image has different dimensions
@@ -2081,12 +2087,13 @@ class WorkScreen(Gtk.Box):
 
             # Only update seed widget if user specified a seed (not random)
             # This preserves -1 for random seed behavior
-            if not self._last_seed_was_random and result.seed != -1:
+            # Skip seed update for refiner mode (each mask uses different seeds)
+            if not self._last_seed_was_random and result.seed != -1 and not in_refiner_mode:
                 self._params_widget.set_seed(result.seed)
 
             # Show the actual seed used in status bar
             seed_info = f" (seed: {result.seed})" if result.seed != -1 else ""
-            mode_info = " (inpaint)" if in_inpaint_mode else (" (outpaint)" if in_outpaint_mode else "")
+            mode_info = " (inpaint)" if in_inpaint_mode else (" (outpaint)" if in_outpaint_mode else (" (refine)" if in_refiner_mode else ""))
             self._status_bar.set_text(f"Generated: {result.path.name if result.path else 'image'}{seed_info}{mode_info}")
 
             # Update toolbar has_image state
@@ -2361,6 +2368,7 @@ class WorkScreen(Gtk.Box):
         font_sizes = self._prompt_section.get_font_sizes()
         positions["positive_prompt_font_size"] = font_sizes.get("positive", 0)
         positions["negative_prompt_font_size"] = font_sizes.get("negative", 0)
+        positions["refiner_prompt_font_size"] = font_sizes.get("refiner", 0)
         # Add collapsed states
         positions["left_panel_collapsed"] = self._left_collapse_btn.collapsed
         positions["right_panel_collapsed"] = self._right_collapse_btn.collapsed

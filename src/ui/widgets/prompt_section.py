@@ -228,11 +228,14 @@ class PromptSection(Gtk.Box):
         return {
             "positive": self._positive_entry.get_font_size(),
             "negative": self._negative_entry.get_font_size(),
+            "refiner": self._refiner_entry.get_font_size(),
         }
 
-    def set_font_sizes(self, positive_size: int, negative_size: int):
+    def set_font_sizes(self, positive_size: int, negative_size: int, refiner_size: int = 0):
         """Restore font sizes."""
         if positive_size > 0:
             self._positive_entry.set_font_size(positive_size)
         if negative_size > 0:
             self._negative_entry.set_font_size(negative_size)
+        if refiner_size > 0:
+            self._refiner_entry.set_font_size(refiner_size)
