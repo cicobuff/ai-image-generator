@@ -301,7 +301,123 @@ class ThumbnailGallery(Gtk.Box):
         if keyval == Gdk.KEY_Delete or keyval == Gdk.KEY_BackSpace:
             self.delete_selected()
             return True
+
+        # Arrow key navigation
+        if keyval in (Gdk.KEY_Left, Gdk.KEY_Right, Gdk.KEY_Up, Gdk.KEY_Down):
+            return self._handle_arrow_navigation(keyval)
+
         return False
+
+    def _handle_arrow_navigation(self, keyval) -> bool:
+        """Handle arrow key navigation between thumbnails."""
+        if not self._thumbnails:
+            return False
+
+        # Get current selection index
+        current_index = self._get_selected_index()
+        if current_index < 0:
+            # No selection, select first item
+            if self._thumbnails:
+                self._select_thumbnail_at_index(0)
+            return True
+
+        # Calculate new index based on arrow key
+        new_index = current_index
+
+        if keyval == Gdk.KEY_Left:
+            new_index = current_index - 1
+        elif keyval == Gdk.KEY_Right:
+            new_index = current_index + 1
+        elif keyval == Gdk.KEY_Up or keyval == Gdk.KEY_Down:
+            # Calculate columns per row for up/down navigation
+            columns = self._get_columns_per_row()
+            if keyval == Gdk.KEY_Up:
+                new_index = current_index - columns
+            else:
+                new_index = current_index + columns
+
+        # Clamp to valid range
+        if new_index < 0 or new_index >= len(self._thumbnails):
+            return True  # Handled but no change
+
+        self._select_thumbnail_at_index(new_index)
+        return True
+
+    def _get_selected_index(self) -> int:
+        """Get the index of the currently selected thumbnail."""
+        if self._selected_path is None:
+            return -1
+        for i, thumb in enumerate(self._thumbnails):
+            if thumb.path == self._selected_path:
+                return i
+        return -1
+
+    def _get_columns_per_row(self) -> int:
+        """Calculate how many columns are visible per row based on flowbox width."""
+        # Get flowbox allocated width
+        width = self._flowbox.get_allocated_width()
+        if width <= 0:
+            return 1
+
+        # Calculate columns: (width) / (thumbnail_size + column_spacing)
+        item_width = self._thumbnail_size + 4  # 4 is column spacing
+        columns = max(1, width // item_width)
+
+        # Respect max children per line setting
+        max_columns = self._flowbox.get_max_children_per_line()
+        return min(columns, max_columns)
+
+    def _select_thumbnail_at_index(self, index: int):
+        """Select thumbnail at given index and scroll it into view."""
+        if index < 0 or index >= len(self._thumbnails):
+            return
+
+        thumb = self._thumbnails[index]
+        path = thumb.path
+
+        # Update selection state
+        self._selected_path = path
+        for t in self._thumbnails:
+            t.set_selected(t.path == path)
+
+        # Scroll thumbnail into view
+        self._scroll_thumbnail_into_view(thumb)
+
+        # Trigger callback to load image in center display
+        if self._on_image_selected:
+            self._on_image_selected(path)
+
+    def _scroll_thumbnail_into_view(self, thumbnail: ThumbnailItem):
+        """Scroll the gallery to ensure the thumbnail is visible."""
+        # Get the FlowBoxChild that contains the thumbnail
+        flowbox_child = thumbnail.get_parent()
+        if flowbox_child is None:
+            return
+
+        # Get the vertical adjustment
+        vadj = self._scrolled.get_vadjustment()
+        if vadj is None:
+            return
+
+        # Get the child's allocation (position within flowbox)
+        allocation = flowbox_child.get_allocation()
+
+        # Get current scroll position and visible area
+        scroll_top = vadj.get_value()
+        visible_height = vadj.get_page_size()
+        scroll_bottom = scroll_top + visible_height
+
+        # Calculate thumbnail bounds
+        thumb_top = allocation.y
+        thumb_bottom = allocation.y + allocation.height
+
+        # Scroll if needed
+        if thumb_top < scroll_top:
+            # Thumbnail is above visible area
+            vadj.set_value(thumb_top)
+        elif thumb_bottom > scroll_bottom:
+            # Thumbnail is below visible area
+            vadj.set_value(thumb_bottom - visible_height)
 
     def _stop_background_loading(self):
         """Stop any running background loading."""
@@ -709,6 +825,9 @@ class ThumbnailGallery(Gtk.Box):
         self._selected_path = path
         for thumb in self._thumbnails:
             thumb.set_selected(thumb.path == path)
+
+        # Grab focus so arrow keys work for navigation
+        self.grab_focus()
 
         if self._on_image_selected:
             self._on_image_selected(path)

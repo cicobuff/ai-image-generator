@@ -1180,8 +1180,9 @@ class GenerationService:
             output_dir = config_manager.config.get_output_path()
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate filename with timestamp and seed
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Generate filename with timestamp (including milliseconds) and seed
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d_%H%M%S") + f"_{now.microsecond // 1000:03d}"
         if is_outpaint:
             prefix = "outpaint_"
         elif is_inpaint:
