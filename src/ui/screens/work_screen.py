@@ -54,6 +54,7 @@ class WorkScreen(Gtk.Box):
         self._batch_executor: ThreadPoolExecutor = None
         self._batch_cancelled = False
         self._batch_completed = 0  # Track actual completed count
+        self._batch_start_time = None  # Track batch start time for summary
         self._build_ui()
         self._connect_signals()
         self._initial_setup()
@@ -740,6 +741,7 @@ class WorkScreen(Gtk.Box):
         self._batch_current = 0
         self._batch_cancelled = False
         self._batch_completed = 0
+        self._batch_start_time = datetime.now()
 
         # Store input image for img2img batch (use the same image for all)
         if batch_type == "img2img":
@@ -1332,6 +1334,12 @@ class WorkScreen(Gtk.Box):
         actual_completed = self._batch_completed
         was_cancelled = self._batch_cancelled
 
+        # Calculate elapsed time
+        if self._batch_start_time:
+            elapsed = (datetime.now() - self._batch_start_time).total_seconds()
+        else:
+            elapsed = 0.0
+
         self._batch_mode = False
         self._batch_type = None
         self._batch_count = 0
@@ -1339,14 +1347,21 @@ class WorkScreen(Gtk.Box):
         self._batch_input_image = None
         self._batch_cancelled = False
         self._batch_completed = 0
+        self._batch_start_time = None
 
         # Re-enable batch widget and toolbar
         self._batch_widget.set_sensitive_all(True)
         self._toolbar.set_state(GenerationState.IDLE)
 
-        # Reset progress widget
-        self._progress_widget.reset()
+        # Reset progress bars but keep widget ready for summary
         self._progress_widget.set_generating(False)
+        self._progress_widget.clear_gpu_progress_bars()
+        self._progress_widget.set_batch_progress(0, 0)
+        self._progress_widget.set_step_progress(0, 0)
+
+        # Show batch summary
+        self._progress_widget.show_batch_summary(actual_completed, elapsed, was_cancelled)
+        self._progress_widget.set_status("Ready")
 
         # Show appropriate status message
         if was_cancelled:

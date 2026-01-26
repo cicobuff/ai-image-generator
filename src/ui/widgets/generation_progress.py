@@ -71,6 +71,35 @@ class GenerationProgressWidget(Gtk.Box):
         self._status_label.set_max_width_chars(40)
         self.append(self._status_label)
 
+        # Batch summary box (hidden by default)
+        self._summary_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self._summary_box.set_visible(False)
+        self._summary_box.add_css_class("batch-summary")
+        self._summary_box.set_margin_top(8)
+        self.append(self._summary_box)
+
+        # Summary labels
+        self._summary_header = Gtk.Label(label="Batch Summary")
+        self._summary_header.set_halign(Gtk.Align.START)
+        self._summary_header.add_css_class("caption")
+        self._summary_header.add_css_class("dim-label")
+        self._summary_box.append(self._summary_header)
+
+        self._summary_images_label = Gtk.Label()
+        self._summary_images_label.set_halign(Gtk.Align.START)
+        self._summary_images_label.add_css_class("caption")
+        self._summary_box.append(self._summary_images_label)
+
+        self._summary_time_label = Gtk.Label()
+        self._summary_time_label.set_halign(Gtk.Align.START)
+        self._summary_time_label.add_css_class("caption")
+        self._summary_box.append(self._summary_time_label)
+
+        self._summary_avg_label = Gtk.Label()
+        self._summary_avg_label.set_halign(Gtk.Align.START)
+        self._summary_avg_label.add_css_class("caption")
+        self._summary_box.append(self._summary_avg_label)
+
     def _create_step_row(self, label_text: str) -> Gtk.Box:
         """Create a step progress row with label, progress bar, and value label."""
         step_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
@@ -216,6 +245,47 @@ class GenerationProgressWidget(Gtk.Box):
 
         # Clear GPU progress bars and restore single step bar
         self.clear_gpu_progress_bars()
+
+        # Hide batch summary
+        self._summary_box.set_visible(False)
+
+    def show_batch_summary(self, images_generated: int, total_seconds: float, was_cancelled: bool = False):
+        """Show batch generation summary.
+
+        Args:
+            images_generated: Number of images successfully generated
+            total_seconds: Total time taken in seconds
+            was_cancelled: Whether the batch was cancelled
+        """
+        # Format total time
+        if total_seconds >= 60:
+            minutes = int(total_seconds // 60)
+            seconds = total_seconds % 60
+            time_str = f"{minutes}m {seconds:.1f}s"
+        else:
+            time_str = f"{total_seconds:.1f}s"
+
+        # Calculate average time per image
+        if images_generated > 0:
+            avg_seconds = total_seconds / images_generated
+            if avg_seconds >= 60:
+                avg_minutes = int(avg_seconds // 60)
+                avg_secs = avg_seconds % 60
+                avg_str = f"{avg_minutes}m {avg_secs:.1f}s"
+            else:
+                avg_str = f"{avg_seconds:.1f}s"
+        else:
+            avg_str = "N/A"
+
+        # Update labels
+        status = "Cancelled" if was_cancelled else "Complete"
+        self._summary_header.set_text(f"Batch {status}")
+        self._summary_images_label.set_text(f"Images: {images_generated}")
+        self._summary_time_label.set_text(f"Total time: {time_str}")
+        self._summary_avg_label.set_text(f"Avg per image: {avg_str}")
+
+        # Show the summary box
+        self._summary_box.set_visible(True)
 
     def set_generating(self, is_generating: bool):
         """Set whether currently generating (affects visual state)."""
