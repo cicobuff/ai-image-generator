@@ -39,7 +39,7 @@ class BatchSettingsWidget(Gtk.Box):
         add_hover_tooltip(count_label, LABEL_TOOLTIPS["batch_count"])
         count_row.append(count_label)
 
-        self._count_spin = Gtk.SpinButton.new_with_range(1, 100, 1)
+        self._count_spin = Gtk.SpinButton.new_with_range(1, 1000, 1)
         self._count_spin.set_value(1)
         self._count_spin.set_hexpand(True)
         self._count_spin.connect("value-changed", self._on_count_changed)
@@ -118,7 +118,7 @@ class BatchSettingsWidget(Gtk.Box):
 
     def set_batch_count(self, count: int):
         """Set the batch count."""
-        self._count_spin.set_value(max(1, min(100, count)))
+        self._count_spin.set_value(max(1, min(1000, count)))
 
     def set_gpu_selected(self, gpu_index: int, selected: bool):
         """Set whether a GPU is selected for batch generation."""
