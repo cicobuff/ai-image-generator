@@ -837,7 +837,7 @@ class GenerationService:
         upscale_model_path: Optional[str] = None,
         output_dir: Optional[Path] = None,
         loras: Optional[list[LoRAInfo]] = None,
-        padding: int = 32,
+        padding: int = 64,
         original_prompt: Optional[str] = None,
     ) -> None:
         """Start refinement generation in background thread.
@@ -1013,6 +1013,13 @@ class GenerationService:
                     else:
                         inpaint_region = upscaled_region
                         inpaint_mask = mask_pil.resize((upscaled_width, upscaled_height), Image.NEAREST)
+
+                    # Apply Gaussian blur to inpaint mask for better context blending
+                    # This tells the diffusion model to gradually blend at the edges
+                    # rather than generating with a hard boundary
+                    mask_blur_radius = max(8, min(inpaint_width, inpaint_height) // 32)
+                    inpaint_mask = inpaint_mask.filter(ImageFilter.GaussianBlur(radius=mask_blur_radius))
+                    print(f"  Applied mask blur (radius={mask_blur_radius}) for context blending")
 
                     # Run inpainting on upscaled region
                     self._notify_progress(

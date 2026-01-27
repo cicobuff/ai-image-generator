@@ -66,6 +66,11 @@ class GenerationParamsWidget(Gtk.Box):
         # Strength (for img2img)
         self.append(self._create_strength_section())
 
+        # Refiner Strength (hidden by default, shown in refiner mode)
+        self._refiner_strength_row = self._create_refiner_strength_section()
+        self._refiner_strength_row.set_visible(False)
+        self.append(self._refiner_strength_row)
+
         # Seed
         self.append(self._create_seed_section())
 
@@ -184,6 +189,24 @@ class GenerationParamsWidget(Gtk.Box):
         self._strength_spin.set_hexpand(True)
         self._strength_spin.set_tooltip_text("Lower values keep more of the original image")
         row.append(self._strength_spin)
+
+        return row
+
+    def _create_refiner_strength_section(self) -> Gtk.Widget:
+        """Create refiner strength input section (shown only in refiner mode)."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+
+        label = self._create_label("Ref Str")
+        label.set_tooltip_text("Refiner Strength: Lower values preserve more of the original region")
+        label.add_css_class("refiner-label")
+        row.append(label)
+
+        self._refiner_strength_spin = Gtk.SpinButton.new_with_range(0.0, 1.0, 0.05)
+        self._refiner_strength_spin.set_digits(2)
+        self._refiner_strength_spin.set_value(0.65)  # Default slightly lower than img2img
+        self._refiner_strength_spin.set_hexpand(True)
+        self._refiner_strength_spin.set_tooltip_text("Lower values keep more of the original region structure")
+        row.append(self._refiner_strength_spin)
 
         return row
 
@@ -332,6 +355,18 @@ class GenerationParamsWidget(Gtk.Box):
     def set_strength(self, strength: float):
         """Set the img2img strength value."""
         self._strength_spin.set_value(strength)
+
+    def get_refiner_strength(self) -> float:
+        """Get the refiner strength value."""
+        return self._refiner_strength_spin.get_value()
+
+    def set_refiner_strength(self, strength: float):
+        """Set the refiner strength value."""
+        self._refiner_strength_spin.set_value(strength)
+
+    def set_refiner_mode(self, enabled: bool):
+        """Show or hide refiner-specific controls."""
+        self._refiner_strength_row.set_visible(enabled)
 
     def reset_to_defaults(self):
         """Reset all parameters to defaults."""

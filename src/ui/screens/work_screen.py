@@ -1806,6 +1806,9 @@ class WorkScreen(Gtk.Box):
         # Show/hide refiner prompt
         self._prompt_section.set_refiner_mode(enabled)
 
+        # Show/hide refiner strength control
+        self._params_widget.set_refiner_mode(enabled)
+
         # Update center panel style
         center_panel = self._image_display.get_parent().get_parent()
         if enabled:
@@ -1989,7 +1992,7 @@ class WorkScreen(Gtk.Box):
 
         # Use refiner prompt for generation params
         params = self._params_widget.get_params(refiner_prompt, negative)
-        strength = self._params_widget.get_strength()
+        strength = self._params_widget.get_refiner_strength()
 
         input_image = self._image_display.get_pil_image()
         if input_image is None:

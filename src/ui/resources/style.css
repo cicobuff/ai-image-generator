@@ -698,6 +698,12 @@ dropdown.purple-button > button > box > image {
     color: alpha(white, 0.6);
 }
 
+/* Refiner label style (amber/yellow to match refiner theme) */
+.refiner-label {
+    color: #FFCA28;
+    font-weight: bold;
+}
+
 /* Yellow button style (Refiner actions) */
 .yellow-button {
     background: #FFCA28;
