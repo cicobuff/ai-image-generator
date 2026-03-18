@@ -116,12 +116,13 @@ SECTION_INFO = {
     "models": (
         "Model Selection\n\n"
         "Select the AI models for image generation:\n"
-        "• Checkpoint: Main Stable Diffusion model (required)\n"
+        "• Checkpoint: Main model (SD 1.5, SDXL, or Z-Image)\n"
         "• VAE: Variational Auto-Encoder for image decoding\n"
         "• CLIP: Text encoder (usually embedded in checkpoint)\n\n"
+        "Z-Image models are auto-detected. Turbo variants use\n"
+        "9 steps with CFG 0.0 and no negative prompt.\n\n"
         "• Optimize: Enable torch.compile for ~20% faster generation.\n"
         "  First compilation takes several minutes, then cached.\n"
-        "  Compiled kernels are shared across all GPUs.\n"
         "  Fixed resolution per optimization.\n"
         "  Does NOT work with Inpaint/Outpaint modes."
     ),
@@ -154,10 +155,8 @@ SECTION_INFO = {
     ),
     "batch": (
         "Batch Generation\n\n"
-        "Generate multiple images in parallel:\n"
-        "• Count: Number of images to generate\n"
-        "• GPUs: Select which GPUs to use\n\n"
-        "With multiple GPUs, images generate in parallel.\n"
+        "Generate multiple images sequentially:\n"
+        "• Count: Number of images to generate\n\n"
         "Each image uses a random seed for variety."
     ),
     "gallery": (
@@ -204,11 +203,8 @@ SECTION_INFO = {
         "Shows the current generation status:\n"
         "• Batch: Overall progress for batch generation\n"
         "• Step: Current image progress (steps, VAE, saving)\n"
-        "• Step (GPUn): Per-GPU step progress in batch mode\n"
         "• Status: What's currently happening\n\n"
-        "Batch progress shows 1/1 for single image generation.\n"
-        "In batch mode with multiple GPUs, each GPU shows its own\n"
-        "step progress bar."
+        "Batch progress shows 1/1 for single image generation."
     ),
 }
 
@@ -227,11 +223,11 @@ LABEL_TOOLTIPS = {
     "checkpoint": "Main Stable Diffusion model file (.safetensors). This is the primary model for generation.",
     "vae": "Variational Auto-Encoder. Converts latent space to images. 'Embedded' uses the one in checkpoint.",
     "clip": "Text encoder model. Converts prompts to embeddings. Usually embedded in checkpoint.",
+    "text enc": "Text encoder for Z-Image models. Select a Qwen3 text encoder from models/text_encoder/.",
     "optimize": (
         "Use torch.compile for ~20% faster generation. "
-        "First compilation takes several minutes, then kernels are cached and shared across all GPUs. "
+        "First compilation takes several minutes, then kernels are cached. "
         "Each optimization is for a model with a fixed resolution. "
-        "Works with single-GPU and multi-GPU batch generation. "
         "Does NOT work with Inpainting and Outpainting modes."
     ),
 
@@ -241,7 +237,6 @@ LABEL_TOOLTIPS = {
 
     # Batch
     "batch_count": "Number of images to generate in this batch.",
-    "batch_gpus": "GPUs to use for parallel generation. More GPUs = faster batch completion.",
 
     # LoRA
     "lora_weight": "LoRA influence strength. 1.0 = full effect, 0.5 = half effect, 0.0 = disabled.",

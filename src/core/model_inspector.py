@@ -12,12 +12,15 @@ from safetensors import safe_open
 class ModelComponents:
     """Detected components in a model file."""
     has_unet: bool = False
+    has_transformer: bool = False
     has_vae: bool = False
     has_text_encoder: bool = False  # CLIP
     has_text_encoder_2: bool = False  # CLIP for SDXL
     is_sdxl: bool = False
     is_sd15: bool = False
+    is_zimage: bool = False
     is_inpainting: bool = False
+    is_hf_directory: bool = False
     model_type: str = "unknown"
 
 
@@ -50,6 +53,20 @@ class ModelInspector:
         "conditioner.embedders.1.",
         "model.diffusion_model.input_blocks.7.1.transformer_blocks.4.",
         "model.diffusion_model.middle_block.1.transformer_blocks.4.",
+    )
+
+    # Z-Image (DiT) key prefixes and indicators
+    ZIMAGE_PREFIXES = (
+        "cap_embedder.",
+        "t_embedder.",
+        "context_refiner.",
+        "noise_refiner.",
+    )
+
+    ZIMAGE_INDICATORS = (
+        "cap_pad_token",
+        "x_pad_token",
+        "layers.29.",
     )
 
     def inspect_safetensors(self, path: Path) -> ModelComponents:
@@ -89,6 +106,17 @@ class ModelInspector:
                     components.model_type = "sd15"
                 else:
                     components.model_type = "sd"
+
+            # Check for Z-Image (DiT) model
+            if not components.is_sdxl and not components.has_unet:
+                is_zimage = (
+                    self._has_prefix(keys, self.ZIMAGE_PREFIXES)
+                    or self._has_any_key(keys, self.ZIMAGE_INDICATORS)
+                )
+                if is_zimage:
+                    components.is_zimage = True
+                    components.has_transformer = True
+                    components.model_type = "zimage"
 
             # Check for inpainting model
             components.is_inpainting = self._is_inpainting_model(keys)
@@ -138,6 +166,17 @@ class ModelInspector:
                 else:
                     components.model_type = "sd"
 
+            # Check for Z-Image (DiT) model
+            if not components.is_sdxl and not components.has_unet:
+                is_zimage = (
+                    self._has_prefix(keys, self.ZIMAGE_PREFIXES)
+                    or self._has_any_key(keys, self.ZIMAGE_INDICATORS)
+                )
+                if is_zimage:
+                    components.is_zimage = True
+                    components.has_transformer = True
+                    components.model_type = "zimage"
+
             components.is_inpainting = self._is_inpainting_model(keys)
             if components.is_inpainting:
                 components.model_type += "_inpainting"
@@ -147,17 +186,69 @@ class ModelInspector:
 
         return components
 
-    def inspect(self, path: Path) -> ModelComponents:
+    def inspect_hf_directory(self, path: Path) -> ModelComponents:
         """
-        Inspect any supported model file.
+        Inspect an HF-format model directory via model_index.json.
 
         Args:
-            path: Path to the model file
+            path: Path to the model directory
 
         Returns:
             ModelComponents with detected features
         """
-        if path.suffix == ".safetensors":
+        components = ModelComponents()
+
+        model_index = path / "model_index.json"
+        if not model_index.exists():
+            return components
+
+        try:
+            with open(model_index) as f:
+                index = json.load(f)
+
+            class_name = index.get("_class_name", "")
+
+            if "ZImage" in class_name:
+                components.is_zimage = True
+                components.has_transformer = True
+                components.model_type = "zimage"
+                components.is_hf_directory = True
+
+                # Check for bundled components
+                if (path / "vae").exists():
+                    components.has_vae = True
+                if (path / "text_encoder").exists():
+                    components.has_text_encoder = True
+
+            elif "StableDiffusionXL" in class_name:
+                components.is_sdxl = True
+                components.has_unet = True
+                components.model_type = "sdxl"
+                components.is_hf_directory = True
+            elif "StableDiffusion" in class_name:
+                components.has_unet = True
+                components.is_sd15 = True
+                components.model_type = "sd15"
+                components.is_hf_directory = True
+
+        except Exception as e:
+            print(f"Error inspecting HF directory {path}: {e}")
+
+        return components
+
+    def inspect(self, path: Path) -> ModelComponents:
+        """
+        Inspect any supported model file or HF directory.
+
+        Args:
+            path: Path to the model file or directory
+
+        Returns:
+            ModelComponents with detected features
+        """
+        if path.is_dir() and (path / "model_index.json").exists():
+            return self.inspect_hf_directory(path)
+        elif path.suffix == ".safetensors":
             return self.inspect_safetensors(path)
         elif path.suffix in (".ckpt", ".pt"):
             return self.inspect_checkpoint(path)

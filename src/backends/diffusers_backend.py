@@ -49,8 +49,9 @@ from diffusers import (
     PNDMScheduler,
 )
 
+from enum import Enum
 from src.utils.constants import SAMPLERS, KARRAS_SAMPLERS
-from src.core.gpu_manager import gpu_manager
+
 
 # Import compel for long prompt support
 try:
@@ -59,6 +60,13 @@ try:
 except ImportError:
     COMPEL_AVAILABLE = False
     _log("Compel not available - prompts will be limited to 77 tokens")
+
+
+class ModelFamily(Enum):
+    """Model architecture family."""
+    SD15 = "sd15"
+    SDXL = "sdxl"
+    ZIMAGE = "zimage"
 
 
 @dataclass
@@ -93,22 +101,16 @@ class DiffusersBackend:
         "PNDMScheduler": PNDMScheduler,
     }
 
-    def __init__(self, gpu_index: int = 0):
-        """
-        Initialize the backend.
-
-        Args:
-            gpu_index: The GPU index to use for this backend instance
-        """
+    def __init__(self):
+        """Initialize the backend."""
         self._pipeline: Optional[Any] = None
         self._img2img_pipeline: Optional[Any] = None
         self._inpaint_pipeline: Optional[Any] = None
-        self._is_sdxl: bool = False
+        self._model_family: ModelFamily = ModelFamily.SDXL
+        self._is_turbo: bool = False
         self._loaded_checkpoint: Optional[str] = None
         self._loaded_vae: Optional[str] = None
-        self._gpu_index: int = gpu_index
-        self._gpu_indices: list[int] = [gpu_index]
-        self._device: str = f"cuda:{gpu_index}" if torch.cuda.is_available() else "cpu"
+        self._device: str = "cuda:0" if torch.cuda.is_available() else "cpu"
         # LoRA tracking
         self._loaded_loras: list[tuple[str, float]] = []  # List of (path, weight) tuples
         # Prompt embedding cache for faster repeated generations
@@ -132,7 +134,22 @@ class DiffusersBackend:
     @property
     def is_sdxl(self) -> bool:
         """Check if loaded model is SDXL."""
-        return self._is_sdxl
+        return self._model_family == ModelFamily.SDXL
+
+    @property
+    def is_zimage(self) -> bool:
+        """Check if loaded model is Z-Image."""
+        return self._model_family == ModelFamily.ZIMAGE
+
+    @property
+    def model_family(self) -> ModelFamily:
+        """Get the loaded model family."""
+        return self._model_family
+
+    @property
+    def is_turbo(self) -> bool:
+        """Check if loaded Z-Image model is Turbo variant."""
+        return self._is_turbo
 
     @property
     def loaded_checkpoint(self) -> Optional[str]:
@@ -144,18 +161,6 @@ class DiffusersBackend:
         """Get path of currently loaded VAE, or None if using embedded."""
         return self._loaded_vae
 
-    def set_gpus(self, indices: list[int]) -> None:
-        """Set which GPUs to use for generation."""
-        self._gpu_indices = indices if indices else [0]
-        # Update primary GPU index and device
-        if indices:
-            self._gpu_index = indices[0]
-            self._device = f"cuda:{self._gpu_index}" if torch.cuda.is_available() else "cpu"
-
-    @property
-    def gpu_index(self) -> int:
-        """Get the GPU index this backend uses."""
-        return self._gpu_index
 
     @property
     def is_compiled(self) -> bool:
@@ -220,19 +225,25 @@ class DiffusersBackend:
         use_compiled: bool = False,
         target_width: int = 1024,
         target_height: int = 1024,
+        is_turbo: bool = False,
+        text_encoder_path: Optional[str] = None,
+        is_hf_directory: bool = False,
     ) -> bool:
         """
-        Load a Stable Diffusion model.
+        Load a Stable Diffusion or Z-Image model.
 
         Args:
-            checkpoint_path: Path to the checkpoint file
-            model_type: Type of model ("sdxl", "sd15", "sd")
+            checkpoint_path: Path to the checkpoint file or HF directory
+            model_type: Type of model ("sdxl", "sd15", "sd", "zimage")
             vae_path: Optional path to separate VAE
             clip_path: Optional path to separate CLIP (not commonly used)
             progress_callback: Callback for progress updates (message, progress 0-1)
             use_compiled: If True and compiled cache exists, apply torch.compile
             target_width: Target width for compiled cache lookup
             target_height: Target height for compiled cache lookup
+            is_turbo: If True, model is Z-Image Turbo variant
+            text_encoder_path: Optional path to shared text encoder for Z-Image
+            is_hf_directory: If True, checkpoint_path is an HF directory
 
         Returns:
             True if loading succeeded
@@ -261,113 +272,25 @@ class DiffusersBackend:
             # Unload existing model first
             self.unload_model()
 
-            self._is_sdxl = "sdxl" in model_type.lower()
-
-            # Get max memory config for multi-GPU
-            max_memory = gpu_manager.get_max_memory_config(self._gpu_indices)
+            # Determine model family
+            model_type_lower = model_type.lower()
+            if "zimage" in model_type_lower:
+                self._model_family = ModelFamily.ZIMAGE
+                self._is_turbo = is_turbo
+            elif "sdxl" in model_type_lower:
+                self._model_family = ModelFamily.SDXL
+            else:
+                self._model_family = ModelFamily.SD15
 
             if progress_callback:
                 progress_callback("Loading checkpoint...", 0.1)
 
-            # Load the appropriate pipeline
-            pipeline_class = StableDiffusionXLPipeline if self._is_sdxl else StableDiffusionPipeline
-
-            # Use first selected GPU (multi-GPU requires more complex setup)
-            self._device = f"cuda:{self._gpu_indices[0]}" if torch.cuda.is_available() else "cpu"
-            _log(f"Target device: {self._device}")
-
-            # Load the pipeline
-            _log(f"Loading model from checkpoint...")
-            self._pipeline = pipeline_class.from_single_file(
-                checkpoint_path,
-                torch_dtype=torch.float16,
-                use_safetensors=checkpoint_path.endswith(".safetensors"),
-            )
-
-            # Move all components to the same GPU
-            _log(f"Moving pipeline components to {self._device}...")
-
-            if hasattr(self._pipeline, 'unet') and self._pipeline.unet is not None:
-                self._pipeline.unet = self._pipeline.unet.to(self._device)
-                _log(f"  UNet moved to {self._device}")
-
-            if hasattr(self._pipeline, 'vae') and self._pipeline.vae is not None:
-                self._pipeline.vae = self._pipeline.vae.to(self._device)
-                _log(f"  VAE moved to {self._device}")
-
-            if hasattr(self._pipeline, 'text_encoder') and self._pipeline.text_encoder is not None:
-                self._pipeline.text_encoder = self._pipeline.text_encoder.to(self._device)
-                _log(f"  Text encoder moved to {self._device}")
-
-            if hasattr(self._pipeline, 'text_encoder_2') and self._pipeline.text_encoder_2 is not None:
-                self._pipeline.text_encoder_2 = self._pipeline.text_encoder_2.to(self._device)
-                _log(f"  Text encoder 2 moved to {self._device}")
-
-            _log(f"Pipeline device: {self._pipeline.device}")
-
-            if progress_callback:
-                progress_callback("Loading VAE...", 0.5)
-
-            # Load separate VAE if provided
-            if vae_path:
-                vae = AutoencoderKL.from_single_file(
-                    vae_path,
-                    torch_dtype=torch.float16,
-                )
-                self._pipeline.vae = vae.to(self._pipeline.device)
-
-            if progress_callback:
-                progress_callback("Creating img2img pipeline...", 0.7)
-
-            # Create img2img pipeline from the same components
-            img2img_class = StableDiffusionXLImg2ImgPipeline if self._is_sdxl else StableDiffusionImg2ImgPipeline
-            self._img2img_pipeline = img2img_class(
-                vae=self._pipeline.vae,
-                text_encoder=self._pipeline.text_encoder,
-                text_encoder_2=self._pipeline.text_encoder_2 if self._is_sdxl else None,
-                tokenizer=self._pipeline.tokenizer,
-                tokenizer_2=self._pipeline.tokenizer_2 if self._is_sdxl else None,
-                unet=self._pipeline.unet,
-                scheduler=self._pipeline.scheduler,
-            ) if self._is_sdxl else img2img_class(
-                vae=self._pipeline.vae,
-                text_encoder=self._pipeline.text_encoder,
-                tokenizer=self._pipeline.tokenizer,
-                unet=self._pipeline.unet,
-                scheduler=self._pipeline.scheduler,
-                safety_checker=None,
-                feature_extractor=None,
-                requires_safety_checker=False,
-            )
-            _log("Img2img pipeline created")
-
-            if progress_callback:
-                progress_callback("Creating inpaint pipeline...", 0.75)
-
-            # Create inpaint pipeline from the same components
-            inpaint_class = StableDiffusionXLInpaintPipeline if self._is_sdxl else StableDiffusionInpaintPipeline
-            if self._is_sdxl:
-                self._inpaint_pipeline = inpaint_class(
-                    vae=self._pipeline.vae,
-                    text_encoder=self._pipeline.text_encoder,
-                    text_encoder_2=self._pipeline.text_encoder_2,
-                    tokenizer=self._pipeline.tokenizer,
-                    tokenizer_2=self._pipeline.tokenizer_2,
-                    unet=self._pipeline.unet,
-                    scheduler=self._pipeline.scheduler,
-                )
+            if self.is_zimage:
+                # Z-Image (DiT) loading path
+                self._load_zimage(checkpoint_path, is_hf_directory, text_encoder_path, vae_path, progress_callback)
             else:
-                self._inpaint_pipeline = inpaint_class(
-                    vae=self._pipeline.vae,
-                    text_encoder=self._pipeline.text_encoder,
-                    tokenizer=self._pipeline.tokenizer,
-                    unet=self._pipeline.unet,
-                    scheduler=self._pipeline.scheduler,
-                    safety_checker=None,
-                    feature_extractor=None,
-                    requires_safety_checker=False,
-                )
-            _log("Inpaint pipeline created")
+                # SD/SDXL loading path
+                self._load_sd(checkpoint_path, vae_path, progress_callback)
 
             if progress_callback:
                 progress_callback("Optimizing model...", 0.8)
@@ -381,14 +304,20 @@ class DiffusersBackend:
                 self._setup_inductor_cache(cache_dir)
                 if progress_callback:
                     progress_callback("Applying torch.compile with cached kernels...", 0.9)
-                _log("Applying torch.compile to UNet (using cached kernels)...")
-                # Reset dynamo state to avoid conflicts when loading on multiple GPUs
+                compile_target_name = "transformer" if self.is_zimage else "UNet"
+                _log(f"Applying torch.compile to {compile_target_name} (using cached kernels)...")
+                # Reset dynamo state to ensure clean compilation
                 torch._dynamo.reset()
-                # Use default mode - CUDA graphs are disabled via environment variables
-                self._pipeline.unet = torch.compile(
-                    self._pipeline.unet,
-                    fullgraph=False,
-                )
+                if self.is_zimage:
+                    self._pipeline.transformer = torch.compile(
+                        self._pipeline.transformer,
+                        fullgraph=False,
+                    )
+                else:
+                    self._pipeline.unet = torch.compile(
+                        self._pipeline.unet,
+                        fullgraph=False,
+                    )
                 self._is_compiled = True
                 _log("torch.compile applied - cached kernels will be used")
             else:
@@ -402,11 +331,10 @@ class DiffusersBackend:
                 torch.cuda.synchronize()
 
             # Print VRAM usage after loading
-            for i in self._gpu_indices:
-                if torch.cuda.is_available():
-                    allocated = torch.cuda.memory_allocated(i) / (1024**3)
-                    reserved = torch.cuda.memory_reserved(i) / (1024**3)
-                    _log(f"GPU {i} - Allocated: {allocated:.2f} GB, Reserved: {reserved:.2f} GB")
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated(0) / (1024**3)
+                reserved = torch.cuda.memory_reserved(0) / (1024**3)
+                _log(f"GPU 0 - Allocated: {allocated:.2f} GB, Reserved: {reserved:.2f} GB")
 
             if progress_callback:
                 progress_callback("Model loaded successfully", 1.0)
@@ -419,6 +347,251 @@ class DiffusersBackend:
             if progress_callback:
                 progress_callback(f"Error: {e}", 0.0)
             return False
+
+    def _load_sd(
+        self,
+        checkpoint_path: str,
+        vae_path: Optional[str],
+        progress_callback: Optional[Callable[[str, float], None]],
+    ) -> None:
+        """Load an SD/SDXL model pipeline."""
+        pipeline_class = StableDiffusionXLPipeline if self.is_sdxl else StableDiffusionPipeline
+        _log(f"Target device: {self._device}")
+
+        _log("Loading model from checkpoint...")
+        self._pipeline = pipeline_class.from_single_file(
+            checkpoint_path,
+            torch_dtype=torch.float16,
+            use_safetensors=checkpoint_path.endswith(".safetensors"),
+        )
+
+        # Move all components to the same GPU
+        _log(f"Moving pipeline components to {self._device}...")
+
+        if hasattr(self._pipeline, 'unet') and self._pipeline.unet is not None:
+            self._pipeline.unet = self._pipeline.unet.to(self._device)
+            _log(f"  UNet moved to {self._device}")
+
+        if hasattr(self._pipeline, 'vae') and self._pipeline.vae is not None:
+            self._pipeline.vae = self._pipeline.vae.to(self._device)
+            _log(f"  VAE moved to {self._device}")
+
+        if hasattr(self._pipeline, 'text_encoder') and self._pipeline.text_encoder is not None:
+            self._pipeline.text_encoder = self._pipeline.text_encoder.to(self._device)
+            _log(f"  Text encoder moved to {self._device}")
+
+        if hasattr(self._pipeline, 'text_encoder_2') and self._pipeline.text_encoder_2 is not None:
+            self._pipeline.text_encoder_2 = self._pipeline.text_encoder_2.to(self._device)
+            _log(f"  Text encoder 2 moved to {self._device}")
+
+        _log(f"Pipeline device: {self._pipeline.device}")
+
+        if progress_callback:
+            progress_callback("Loading VAE...", 0.5)
+
+        # Load separate VAE if provided
+        if vae_path:
+            vae = AutoencoderKL.from_single_file(
+                vae_path,
+                torch_dtype=torch.float16,
+            )
+            self._pipeline.vae = vae.to(self._pipeline.device)
+
+        if progress_callback:
+            progress_callback("Creating img2img pipeline...", 0.7)
+
+        # Create img2img pipeline from the same components
+        img2img_class = StableDiffusionXLImg2ImgPipeline if self.is_sdxl else StableDiffusionImg2ImgPipeline
+        self._img2img_pipeline = img2img_class(
+            vae=self._pipeline.vae,
+            text_encoder=self._pipeline.text_encoder,
+            text_encoder_2=self._pipeline.text_encoder_2 if self.is_sdxl else None,
+            tokenizer=self._pipeline.tokenizer,
+            tokenizer_2=self._pipeline.tokenizer_2 if self.is_sdxl else None,
+            unet=self._pipeline.unet,
+            scheduler=self._pipeline.scheduler,
+        ) if self.is_sdxl else img2img_class(
+            vae=self._pipeline.vae,
+            text_encoder=self._pipeline.text_encoder,
+            tokenizer=self._pipeline.tokenizer,
+            unet=self._pipeline.unet,
+            scheduler=self._pipeline.scheduler,
+            safety_checker=None,
+            feature_extractor=None,
+            requires_safety_checker=False,
+        )
+        _log("Img2img pipeline created")
+
+        if progress_callback:
+            progress_callback("Creating inpaint pipeline...", 0.75)
+
+        # Create inpaint pipeline from the same components
+        inpaint_class = StableDiffusionXLInpaintPipeline if self.is_sdxl else StableDiffusionInpaintPipeline
+        if self.is_sdxl:
+            self._inpaint_pipeline = inpaint_class(
+                vae=self._pipeline.vae,
+                text_encoder=self._pipeline.text_encoder,
+                text_encoder_2=self._pipeline.text_encoder_2,
+                tokenizer=self._pipeline.tokenizer,
+                tokenizer_2=self._pipeline.tokenizer_2,
+                unet=self._pipeline.unet,
+                scheduler=self._pipeline.scheduler,
+            )
+        else:
+            self._inpaint_pipeline = inpaint_class(
+                vae=self._pipeline.vae,
+                text_encoder=self._pipeline.text_encoder,
+                tokenizer=self._pipeline.tokenizer,
+                unet=self._pipeline.unet,
+                scheduler=self._pipeline.scheduler,
+                safety_checker=None,
+                feature_extractor=None,
+                requires_safety_checker=False,
+            )
+        _log("Inpaint pipeline created")
+
+    @staticmethod
+    def _load_text_encoder(text_encoder_path: str):
+        """Load a text encoder for Z-Image from a file or HF directory.
+
+        Returns (text_encoder, tokenizer) tuple.
+        """
+        from transformers import Qwen3Model, Qwen3Config, AutoTokenizer
+        import torch as _torch
+
+        te_path = Path(text_encoder_path)
+        if te_path.is_dir():
+            # HF directory with config.json
+            text_encoder = Qwen3Model.from_pretrained(
+                te_path, torch_dtype=_torch.bfloat16
+            )
+            tokenizer = AutoTokenizer.from_pretrained(te_path)
+        else:
+            # Single safetensors file - need to load config from HF hub
+            from safetensors.torch import load_file
+            raw_state_dict = load_file(str(te_path))
+
+            # Strip "model." prefix if present (common in single-file exports)
+            state_dict = {}
+            for k, v in raw_state_dict.items():
+                new_key = k.removeprefix("model.")
+                state_dict[new_key] = v
+
+            # Detect model size from embed_tokens shape
+            embed_key = "embed_tokens.weight"
+            if embed_key in state_dict:
+                hidden_size = state_dict[embed_key].shape[1]
+            else:
+                hidden_size = 2560  # Default to Qwen3-4B
+
+            # Map hidden size to known Qwen3 model repo
+            qwen3_repos = {
+                1024: "Qwen/Qwen3-0.6B",
+                1536: "Qwen/Qwen3-1.7B",
+                2560: "Qwen/Qwen3-4B",
+                3584: "Qwen/Qwen3-8B",
+            }
+            repo_id = qwen3_repos.get(hidden_size, "Qwen/Qwen3-4B")
+            _log(f"Detected hidden_size={hidden_size}, using config from {repo_id}")
+
+            config = Qwen3Config.from_pretrained(repo_id)
+            text_encoder = Qwen3Model(config)
+            text_encoder.load_state_dict(state_dict)
+            text_encoder = text_encoder.to(_torch.bfloat16)
+            tokenizer = AutoTokenizer.from_pretrained(repo_id)
+
+        return text_encoder, tokenizer
+
+    def _load_zimage(
+        self,
+        checkpoint_path: str,
+        is_hf_directory: bool,
+        text_encoder_path: Optional[str],
+        vae_path: Optional[str],
+        progress_callback: Optional[Callable[[str, float], None]],
+    ) -> None:
+        """Load a Z-Image (DiT) model pipeline."""
+        try:
+            from diffusers import ZImagePipeline, ZImageImg2ImgPipeline, ZImageInpaintPipeline
+        except ImportError:
+            raise ImportError(
+                "Z-Image support requires diffusers with ZImagePipeline. "
+                "Install the latest diffusers from source: pip install git+https://github.com/huggingface/diffusers.git"
+            )
+
+        _log(f"Loading Z-Image model (turbo={self._is_turbo}, hf_dir={is_hf_directory})...")
+        _log(f"Target device: {self._device}")
+
+        if is_hf_directory:
+            # Load from HF pretrained directory
+            _log(f"Loading from HF directory: {checkpoint_path}")
+            self._pipeline = ZImagePipeline.from_pretrained(
+                checkpoint_path,
+                torch_dtype=torch.bfloat16,
+            )
+        else:
+            # Load from single file (AIO safetensors)
+            _log(f"Loading from single file: {checkpoint_path}")
+            load_kwargs = {"torch_dtype": torch.bfloat16}
+            if text_encoder_path:
+                _log(f"Loading external text encoder: {text_encoder_path}")
+                text_encoder, tokenizer = self._load_text_encoder(text_encoder_path)
+                load_kwargs["text_encoder"] = text_encoder
+                load_kwargs["tokenizer"] = tokenizer
+                _log(f"Text encoder loaded successfully")
+            if vae_path:
+                _log(f"Loading external VAE: {vae_path}")
+                vae = AutoencoderKL.from_single_file(
+                    vae_path,
+                    config="Tongyi-MAI/Z-Image-Turbo",
+                    subfolder="vae",
+                    torch_dtype=torch.bfloat16,
+                )
+                load_kwargs["vae"] = vae
+                _log(f"VAE loaded successfully")
+            self._pipeline = ZImagePipeline.from_single_file(
+                checkpoint_path,
+                **load_kwargs,
+            )
+
+        if progress_callback:
+            progress_callback("Moving Z-Image to GPU...", 0.5)
+
+        # Move components to device
+        if hasattr(self._pipeline, 'transformer') and self._pipeline.transformer is not None:
+            self._pipeline.transformer = self._pipeline.transformer.to(self._device)
+            _log(f"  Transformer moved to {self._device}")
+
+        if hasattr(self._pipeline, 'vae') and self._pipeline.vae is not None:
+            self._pipeline.vae = self._pipeline.vae.to(self._device)
+            _log(f"  VAE moved to {self._device}")
+
+        if hasattr(self._pipeline, 'text_encoder') and self._pipeline.text_encoder is not None:
+            self._pipeline.text_encoder = self._pipeline.text_encoder.to(self._device)
+            _log(f"  Text encoder moved to {self._device}")
+
+        _log(f"Pipeline device: {self._pipeline.device}")
+
+        if progress_callback:
+            progress_callback("Creating Z-Image img2img pipeline...", 0.7)
+
+        # Create img2img pipeline from shared components
+        shared_components = {
+            "transformer": self._pipeline.transformer,
+            "vae": self._pipeline.vae,
+            "text_encoder": self._pipeline.text_encoder,
+            "tokenizer": self._pipeline.tokenizer,
+            "scheduler": self._pipeline.scheduler,
+        }
+        self._img2img_pipeline = ZImageImg2ImgPipeline(**shared_components)
+        _log("Z-Image img2img pipeline created")
+
+        if progress_callback:
+            progress_callback("Creating Z-Image inpaint pipeline...", 0.75)
+
+        # Create inpaint pipeline from shared components
+        self._inpaint_pipeline = ZImageInpaintPipeline(**shared_components)
+        _log("Z-Image inpaint pipeline created")
 
     def _setup_inductor_cache(self, cache_dir: Path) -> None:
         """Set up PyTorch inductor cache directory for torch.compile.
@@ -508,22 +681,29 @@ class DiffusersBackend:
             # Re-apply inductor cache settings after model load (in case load_model reset anything)
             self._setup_inductor_cache(cache_dir)
 
-            if progress_callback:
-                progress_callback("Applying torch.compile to UNet...", 0.45)
+            compile_target_name = "transformer" if self.is_zimage else "UNet"
 
-            # Apply torch.compile to the UNet (the main computation bottleneck)
-            _log("Applying torch.compile to UNet (default mode, no CUDA graphs)...")
+            if progress_callback:
+                progress_callback(f"Applying torch.compile to {compile_target_name}...", 0.45)
+
+            _log(f"Applying torch.compile to {compile_target_name} (default mode, no CUDA graphs)...")
 
             # Reset dynamo state to ensure clean compilation
             torch._dynamo.reset()
 
             # Use default mode - CUDA graphs are disabled via environment variables
-            self._pipeline.unet = torch.compile(
-                self._pipeline.unet,
-                fullgraph=False,
-            )
+            if self.is_zimage:
+                self._pipeline.transformer = torch.compile(
+                    self._pipeline.transformer,
+                    fullgraph=False,
+                )
+            else:
+                self._pipeline.unet = torch.compile(
+                    self._pipeline.unet,
+                    fullgraph=False,
+                )
 
-            _log("torch.compile applied to UNet")
+            _log(f"torch.compile applied to {compile_target_name}")
 
             if progress_callback:
                 progress_callback("Running warm-up generation (this triggers compilation)...", 0.5)
@@ -553,8 +733,13 @@ class DiffusersBackend:
                 "generator": generator,
             }
 
-            # Use cached embeddings
-            if self._is_sdxl:
+            # Use cached embeddings or raw prompts
+            if self.is_zimage:
+                gen_kwargs["prompt"] = warmup_prompt
+                gen_kwargs["max_sequence_length"] = 512
+                if self._is_turbo:
+                    gen_kwargs["guidance_scale"] = 0.0
+            elif self.is_sdxl:
                 gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
                 gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
                 gen_kwargs["pooled_prompt_embeds"] = self._cached_pooled_prompt_embeds
@@ -645,23 +830,39 @@ class DiffusersBackend:
             torch.backends.cudnn.allow_tf32 = True
             _log("Enabled CUDA optimizations (cuDNN benchmark, TF32)")
 
-        # Try to enable xformers memory efficient attention (fastest option)
-        xformers_enabled = False
-        try:
-            self._pipeline.enable_xformers_memory_efficient_attention()
-            xformers_enabled = True
-            _log("Enabled xformers memory efficient attention")
-        except Exception as e:
-            _log(f"xformers not available: {e}")
-
-        # If xformers not available, try PyTorch 2.0 SDPA
-        if not xformers_enabled:
+        # UNet-specific optimizations (skip for Z-Image which uses transformer)
+        if not self.is_zimage:
+            # Try to enable xformers memory efficient attention (fastest option)
+            xformers_enabled = False
             try:
-                from diffusers.models.attention_processor import AttnProcessor2_0
-                self._pipeline.unet.set_attn_processor(AttnProcessor2_0())
-                _log("Enabled PyTorch 2.0 SDPA attention")
+                self._pipeline.enable_xformers_memory_efficient_attention()
+                xformers_enabled = True
+                _log("Enabled xformers memory efficient attention")
             except Exception as e:
-                _log(f"Could not enable SDPA: {e}")
+                _log(f"xformers not available: {e}")
+
+            # If xformers not available, try PyTorch 2.0 SDPA
+            if not xformers_enabled:
+                try:
+                    from diffusers.models.attention_processor import AttnProcessor2_0
+                    self._pipeline.unet.set_attn_processor(AttnProcessor2_0())
+                    _log("Enabled PyTorch 2.0 SDPA attention")
+                except Exception as e:
+                    _log(f"Could not enable SDPA: {e}")
+
+            # Set UNet to channels_last memory format for better GPU performance
+            try:
+                self._pipeline.unet.to(memory_format=torch.channels_last)
+                _log("Enabled channels_last memory format for UNet")
+            except Exception as e:
+                _log(f"Could not set channels_last: {e}")
+
+            # Fuse QKV projections for faster attention (if supported)
+            try:
+                self._pipeline.fuse_qkv_projections()
+                _log("Fused QKV projections")
+            except Exception:
+                pass
 
         # DISABLE memory optimizations that slow down generation
         # These trade speed for memory - we want speed
@@ -677,20 +878,6 @@ class DiffusersBackend:
             if hasattr(self._pipeline.vae, 'disable_tiling'):
                 self._pipeline.vae.disable_tiling()
             _log("Disabled VAE slicing/tiling (for speed)")
-        except Exception:
-            pass
-
-        # Set UNet and VAE to channels_last memory format for better GPU performance
-        try:
-            self._pipeline.unet.to(memory_format=torch.channels_last)
-            _log("Enabled channels_last memory format for UNet")
-        except Exception as e:
-            _log(f"Could not set channels_last: {e}")
-
-        # Fuse QKV projections for faster attention (if supported)
-        try:
-            self._pipeline.fuse_qkv_projections()
-            _log("Fused QKV projections")
         except Exception:
             pass
 
@@ -711,7 +898,8 @@ class DiffusersBackend:
 
         self._loaded_checkpoint = None
         self._loaded_vae = None
-        self._is_sdxl = False
+        self._model_family = ModelFamily.SDXL
+        self._is_turbo = False
         self._loaded_loras = []
         self._is_compiled = False
 
@@ -861,6 +1049,10 @@ class DiffusersBackend:
             sampler: The sampler name (e.g., "euler", "dpmpp_2m")
             scheduler_type: The schedule type ("normal", "karras", "exponential", "sgm_uniform")
         """
+        # Z-Image uses fixed FlowMatchEulerDiscreteScheduler
+        if self.is_zimage:
+            return self._pipeline.scheduler
+
         scheduler_name = SAMPLERS.get(sampler, "EulerDiscreteScheduler")
         scheduler_class = self.SCHEDULER_CLASSES.get(
             scheduler_name, EulerDiscreteScheduler
@@ -891,15 +1083,27 @@ class DiffusersBackend:
         Always re-encodes to support dynamic prompt generation (e.g., random word selection).
         Uses compel library for long prompt support (>77 tokens).
         For SDXL models, supports up to 256 tokens (vs standard 77 token limit).
+        For Z-Image, stores raw strings (pipeline handles Qwen tokenization internally).
         """
         negative_prompt = negative_prompt or ""
+
+        # Z-Image: store raw prompt strings, skip embedding encoding
+        if self.is_zimage:
+            self._cached_prompt = prompt
+            self._cached_negative_prompt = negative_prompt
+            self._cached_prompt_embeds = None
+            self._cached_negative_prompt_embeds = None
+            self._cached_pooled_prompt_embeds = None
+            self._cached_negative_pooled_prompt_embeds = None
+            _log("Z-Image: stored raw prompt strings (pipeline handles tokenization)")
+            return True
 
         _log("Encoding prompts...")
 
         try:
             if COMPEL_AVAILABLE:
                 # Use compel for long prompt support
-                if self._is_sdxl:
+                if self.is_sdxl:
                     # SDXL uses dual text encoders
                     # Suppress deprecation warning about multi-encoder API (still works in compel 2.x)
                     with warnings.catch_warnings():
@@ -963,7 +1167,7 @@ class DiffusersBackend:
                     _log(f"Using compel for SD 1.5 long prompt encoding (seq_len={prompt_embeds.shape[1]})")
             else:
                 # Fallback to standard encoding (77 token limit)
-                if self._is_sdxl:
+                if self.is_sdxl:
                     # SDXL uses dual text encoders
                     (
                         self._cached_prompt_embeds,
@@ -1074,7 +1278,7 @@ class DiffusersBackend:
                     return callback_kwargs
                 callback_fn = callback_on_step_end
 
-            # Build generation kwargs with cached embeddings
+            # Build generation kwargs
             gen_kwargs = {
                 "width": params.width,
                 "height": params.height,
@@ -1084,13 +1288,24 @@ class DiffusersBackend:
                 "callback_on_step_end": callback_fn,
             }
 
-            # Use cached embeddings instead of text prompts
-            if self._is_sdxl:
+            if self.is_zimage:
+                # Z-Image: pass raw prompt strings
+                gen_kwargs["prompt"] = self._cached_prompt
+                gen_kwargs["max_sequence_length"] = 512
+                if self._is_turbo:
+                    gen_kwargs["guidance_scale"] = 0.0
+                else:
+                    if self._cached_negative_prompt:
+                        gen_kwargs["negative_prompt"] = self._cached_negative_prompt
+                    gen_kwargs["cfg_normalization"] = False
+            elif self.is_sdxl:
+                # SDXL: use cached embeddings
                 gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
                 gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
                 gen_kwargs["pooled_prompt_embeds"] = self._cached_pooled_prompt_embeds
                 gen_kwargs["negative_pooled_prompt_embeds"] = self._cached_negative_pooled_prompt_embeds
             else:
+                # SD 1.5: use cached embeddings
                 gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
                 if self._cached_negative_prompt_embeds is not None:
                     gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
@@ -1177,7 +1392,7 @@ class DiffusersBackend:
                 input_image = input_image.resize((params.width, params.height), Image.Resampling.LANCZOS)
                 _log(f"Resized input image to {params.width}x{params.height}")
 
-            # Build generation kwargs with cached embeddings
+            # Build generation kwargs
             gen_kwargs = {
                 "image": input_image,
                 "strength": strength,
@@ -1187,8 +1402,16 @@ class DiffusersBackend:
                 "callback_on_step_end": callback_fn,
             }
 
-            # Use cached embeddings instead of text prompts
-            if self._is_sdxl:
+            if self.is_zimage:
+                gen_kwargs["prompt"] = self._cached_prompt
+                gen_kwargs["max_sequence_length"] = 512
+                if self._is_turbo:
+                    gen_kwargs["guidance_scale"] = 0.0
+                else:
+                    if self._cached_negative_prompt:
+                        gen_kwargs["negative_prompt"] = self._cached_negative_prompt
+                    gen_kwargs["cfg_normalization"] = False
+            elif self.is_sdxl:
                 gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
                 gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
                 gen_kwargs["pooled_prompt_embeds"] = self._cached_pooled_prompt_embeds
@@ -1285,7 +1508,7 @@ class DiffusersBackend:
                 mask_image = mask_image.resize(input_image.size, Image.Resampling.LANCZOS)
                 _log(f"Resized mask to match input image: {input_image.width}x{input_image.height}")
 
-            # Build generation kwargs with cached embeddings
+            # Build generation kwargs
             gen_kwargs = {
                 "image": input_image,
                 "mask_image": mask_image,
@@ -1298,8 +1521,16 @@ class DiffusersBackend:
                 "callback_on_step_end": callback_fn,
             }
 
-            # Use cached embeddings instead of text prompts
-            if self._is_sdxl:
+            if self.is_zimage:
+                gen_kwargs["prompt"] = self._cached_prompt
+                gen_kwargs["max_sequence_length"] = 512
+                if self._is_turbo:
+                    gen_kwargs["guidance_scale"] = 0.0
+                else:
+                    if self._cached_negative_prompt:
+                        gen_kwargs["negative_prompt"] = self._cached_negative_prompt
+                    gen_kwargs["cfg_normalization"] = False
+            elif self.is_sdxl:
                 gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
                 gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
                 gen_kwargs["pooled_prompt_embeds"] = self._cached_pooled_prompt_embeds
@@ -1535,8 +1766,17 @@ class DiffusersBackend:
                 "callback_on_step_end": callback_fn,
             }
 
-            # Use cached embeddings
-            if self._is_sdxl:
+            # Use cached embeddings or raw prompts
+            if self.is_zimage:
+                gen_kwargs["prompt"] = self._cached_prompt
+                gen_kwargs["max_sequence_length"] = 512
+                if self._is_turbo:
+                    gen_kwargs["guidance_scale"] = 0.0
+                else:
+                    if self._cached_negative_prompt:
+                        gen_kwargs["negative_prompt"] = self._cached_negative_prompt
+                    gen_kwargs["cfg_normalization"] = False
+            elif self.is_sdxl:
                 gen_kwargs["prompt_embeds"] = self._cached_prompt_embeds
                 gen_kwargs["negative_prompt_embeds"] = self._cached_negative_prompt_embeds
                 gen_kwargs["pooled_prompt_embeds"] = self._cached_pooled_prompt_embeds

@@ -80,6 +80,8 @@ class ModelSelector(Gtk.Box):
             self._models = model_manager.vaes.copy()
         elif self._model_type == ModelType.CLIP:
             self._models = model_manager.clips.copy()
+        elif self._model_type == ModelType.TEXT_ENCODER:
+            self._models = model_manager.text_encoders.copy()
 
         # Build string list for dropdown
         # Add "None" option at the start
@@ -117,6 +119,8 @@ class ModelSelector(Gtk.Box):
             model_manager.select_vae(model)
         elif self._model_type == ModelType.CLIP:
             model_manager.select_clip(model)
+        elif self._model_type == ModelType.TEXT_ENCODER:
+            model_manager.select_text_encoder(model)
 
         # Notify callback
         if self._on_changed:

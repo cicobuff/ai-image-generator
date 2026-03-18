@@ -8,7 +8,6 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib
 
 from src.core.gpu_manager import gpu_manager, GPUInfo
-from src.core.config import config_manager
 from src.utils.constants import GPU_MEMORY_UPDATE_INTERVAL
 from src.ui.widgets.info_helper import SectionHeader, SECTION_INFO
 
@@ -174,24 +173,16 @@ class MonitoringDisplay(Gtk.Box):
         self._update_bars()
 
     def _update_bars(self):
-        """Update the GPU bars based on config."""
+        """Update the GPU bars."""
         # Clear existing bars
         while self._bars_container.get_first_child():
             self._bars_container.remove(self._bars_container.get_first_child())
         self._bars.clear()
 
-        # Create bars for selected GPUs
-        selected_gpus = config_manager.config.gpus.selected
-        for gpu_index in selected_gpus:
-            bar = VRAMBar(gpu_index)
-            self._bars[gpu_index] = bar
-            self._bars_container.append(bar)
-
-        # If no GPUs selected, show message
-        if not selected_gpus:
-            label = Gtk.Label(label="No GPUs selected")
-            label.add_css_class("dim-label")
-            self._bars_container.append(label)
+        # Create bar for GPU 0
+        bar = VRAMBar(0)
+        self._bars[0] = bar
+        self._bars_container.append(bar)
 
     def _start_monitoring_thread(self):
         """Start the monitoring thread."""
@@ -212,15 +203,13 @@ class MonitoringDisplay(Gtk.Box):
             self._monitoring_thread = None
 
     def _monitoring_loop(self):
-        """Background thread loop for monitoring GPUs."""
+        """Background thread loop for monitoring GPU."""
         while not self._stop_monitoring.is_set():
             # Collect GPU info in background thread
             gpu_infos = {}
-            selected_gpus = config_manager.config.gpus.selected
-            for gpu_index in selected_gpus:
-                info = gpu_manager.get_gpu_info(gpu_index)
-                if info:
-                    gpu_infos[gpu_index] = info
+            info = gpu_manager.get_gpu_info(0)
+            if info:
+                gpu_infos[0] = info
 
             # Schedule UI update on main thread
             GLib.idle_add(self._update_ui_from_thread, gpu_infos)

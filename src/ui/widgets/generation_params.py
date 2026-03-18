@@ -24,6 +24,10 @@ from src.utils.constants import (
     MIN_SIZE,
     MAX_SIZE,
     SIZE_STEP,
+    ZIMAGE_DEFAULT_STEPS,
+    ZIMAGE_DEFAULT_CFG,
+    ZIMAGE_TURBO_DEFAULT_STEPS,
+    ZIMAGE_TURBO_DEFAULT_CFG,
 )
 from src.core.config import config_manager
 from src.backends.diffusers_backend import GenerationParams
@@ -367,6 +371,34 @@ class GenerationParamsWidget(Gtk.Box):
     def set_refiner_mode(self, enabled: bool):
         """Show or hide refiner-specific controls."""
         self._refiner_strength_row.set_visible(enabled)
+
+    def set_model_family(self, family: str, is_turbo: bool = False):
+        """Adjust UI controls based on the model family.
+
+        Args:
+            family: "zimage", "sdxl", "sd15", etc.
+            is_turbo: Whether this is a Z-Image Turbo model
+        """
+        if family == "zimage":
+            # Hide sampler/scheduler (Z-Image uses fixed FlowMatchEuler)
+            sampler_row = self._sampler_dropdown.get_parent()
+            if sampler_row:
+                sampler_row.set_visible(False)
+
+            if is_turbo:
+                self._steps_spin.set_value(ZIMAGE_TURBO_DEFAULT_STEPS)
+                self._cfg_spin.set_value(ZIMAGE_TURBO_DEFAULT_CFG)
+                self._cfg_spin.set_sensitive(False)
+            else:
+                self._steps_spin.set_value(ZIMAGE_DEFAULT_STEPS)
+                self._cfg_spin.set_value(ZIMAGE_DEFAULT_CFG)
+                self._cfg_spin.set_sensitive(True)
+        else:
+            # Restore SD/SDXL controls
+            sampler_row = self._sampler_dropdown.get_parent()
+            if sampler_row:
+                sampler_row.set_visible(True)
+            self._cfg_spin.set_sensitive(True)
 
     def reset_to_defaults(self):
         """Reset all parameters to defaults."""

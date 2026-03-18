@@ -139,63 +139,6 @@ class GPUManager:
                 gpus.append(info)
         return gpus
 
-    def get_selected_gpus(self, indices: list[int]) -> list[GPUInfo]:
-        """Get information about selected GPUs."""
-        gpus = []
-        for i in indices:
-            info = self.get_gpu_info(i)
-            if info:
-                gpus.append(info)
-        return gpus
-
-    def get_max_memory_config(self, indices: list[int]) -> dict[int, str]:
-        """
-        Get max_memory configuration for diffusers.
-
-        Returns a dict mapping GPU index to max memory string (e.g., "20GB").
-        Leaves headroom for system operations.
-        """
-        max_memory = {}
-        for i in indices:
-            info = self.get_gpu_info(i)
-            if info:
-                available = int(info.total_memory_gb - GPU_MEMORY_HEADROOM)
-                max_memory[i] = f"{available}GB"
-        return max_memory
-
-    def get_total_available_memory(self, indices: list[int]) -> float:
-        """Get total available VRAM across selected GPUs in GB."""
-        total = 0.0
-        for i in indices:
-            info = self.get_gpu_info(i)
-            if info:
-                total += info.available_for_model
-        return total
-
-    def has_nvlink(self, gpu1: int, gpu2: int) -> bool:
-        """Check if two GPUs are connected via NVLink."""
-        if not self._initialized:
-            if not self.initialize():
-                return False
-
-        try:
-            handle1 = pynvml.nvmlDeviceGetHandleByIndex(gpu1)
-
-            # Check NVLink status for each link
-            for link in range(6):  # NVLink can have up to 6 links
-                try:
-                    state = pynvml.nvmlDeviceGetNvLinkState(handle1, link)
-                    if state == pynvml.NVML_FEATURE_ENABLED:
-                        remote = pynvml.nvmlDeviceGetNvLinkRemotePciInfo(handle1, link)
-                        handle2 = pynvml.nvmlDeviceGetHandleByIndex(gpu2)
-                        pci2 = pynvml.nvmlDeviceGetPciInfo(handle2)
-                        if remote.busId == pci2.busId:
-                            return True
-                except pynvml.NVMLError:
-                    continue
-            return False
-        except pynvml.NVMLError:
-            return False
 
 
 # Global GPU manager instance

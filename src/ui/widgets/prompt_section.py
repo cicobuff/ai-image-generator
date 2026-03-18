@@ -203,6 +203,10 @@ class PromptSection(Gtk.Box):
         """Set the negative prompt text."""
         self._negative_entry.set_text(text)
 
+    def set_negative_visible(self, visible: bool):
+        """Show or hide the negative prompt entry."""
+        self._negative_entry.set_visible(visible)
+
     def set_prompts(self, positive: str, negative: str):
         """Set both prompts at once."""
         self._positive_entry.set_text(positive)

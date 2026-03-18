@@ -26,12 +26,6 @@ class DirectoriesConfig:
 
 
 @dataclass
-class GPUConfig:
-    """Configuration for GPU selection."""
-    selected: list[int] = field(default_factory=lambda: [0])
-
-
-@dataclass
 class GenerationConfig:
     """Configuration for default generation parameters."""
     default_width: int = DEFAULT_WIDTH
@@ -81,7 +75,6 @@ class AppConfig:
     """Main application configuration."""
     version: str = "1.0"
     directories: DirectoriesConfig = field(default_factory=DirectoriesConfig)
-    gpus: GPUConfig = field(default_factory=GPUConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     window: WindowConfig = field(default_factory=WindowConfig)
     outpaint: OutpaintConfig = field(default_factory=OutpaintConfig)
@@ -91,7 +84,6 @@ class AppConfig:
         return {
             "version": self.version,
             "directories": asdict(self.directories),
-            "gpus": asdict(self.gpus),
             "generation": asdict(self.generation),
             "window": asdict(self.window),
             "outpaint": asdict(self.outpaint),
@@ -103,7 +95,6 @@ class AppConfig:
         return cls(
             version=data.get("version", "1.0"),
             directories=DirectoriesConfig(**data.get("directories", {})),
-            gpus=GPUConfig(**data.get("gpus", {})),
             generation=GenerationConfig(**data.get("generation", {})),
             window=WindowConfig(**data.get("window", {})),
             outpaint=OutpaintConfig(**data.get("outpaint", {})),
@@ -187,8 +178,6 @@ class ConfigManager:
                 setattr(config, key, value)
             elif hasattr(config.directories, key):
                 setattr(config.directories, key, value)
-            elif hasattr(config.gpus, key):
-                setattr(config.gpus, key, value)
             elif hasattr(config.generation, key):
                 setattr(config.generation, key, value)
 

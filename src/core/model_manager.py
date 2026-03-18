@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional, Callable
 from enum import Enum
 
-from src.utils.constants import MODEL_EXTENSIONS
+from src.utils.constants import MODEL_EXTENSIONS, ZIMAGE_DIRS
 from src.core.config import config_manager
 from src.core.model_inspector import model_inspector, ModelComponents
 
@@ -15,6 +15,7 @@ class ModelType(Enum):
     CHECKPOINT = "checkpoint"
     VAE = "vae"
     CLIP = "clip"
+    TEXT_ENCODER = "text_encoder"
     UPSCALE = "upscale"
     LORA = "lora"
 
@@ -48,13 +49,15 @@ class ModelInfo:
         """Get display name with embedded indicators."""
         indicators = []
         if self.model_type == ModelType.CHECKPOINT:
+            if self.components.is_zimage:
+                indicators.append("Z-Image")
             if self.has_embedded_vae:
                 indicators.append("VAE")
             if self.has_embedded_clip:
                 indicators.append("CLIP")
 
         if indicators:
-            return f"{self.name} (embedded: {', '.join(indicators)})"
+            return f"{self.name} [{', '.join(indicators)}]"
         return self.name
 
 
@@ -64,12 +67,14 @@ class LoadedModels:
     checkpoint: Optional[ModelInfo] = None
     vae: Optional[ModelInfo] = None
     clip: Optional[ModelInfo] = None
+    text_encoder: Optional[ModelInfo] = None
 
     def clear(self) -> None:
         """Clear all loaded models."""
         self.checkpoint = None
         self.vae = None
         self.clip = None
+        self.text_encoder = None
 
 
 class ModelManager:
@@ -79,10 +84,12 @@ class ModelManager:
         self._checkpoints: list[ModelInfo] = []
         self._vaes: list[ModelInfo] = []
         self._clips: list[ModelInfo] = []
+        self._text_encoders: list[ModelInfo] = []
         self._upscalers: list[ModelInfo] = []
         self._loras: list[ModelInfo] = []
         self._loaded = LoadedModels()
         self._on_models_changed: list[Callable[[], None]] = []
+        self._turbo_override: Optional[bool] = None  # UI turbo toggle override
 
     @property
     def checkpoints(self) -> list[ModelInfo]:
@@ -98,6 +105,11 @@ class ModelManager:
     def clips(self) -> list[ModelInfo]:
         """Get list of available CLIP models."""
         return self._clips
+
+    @property
+    def text_encoders(self) -> list[ModelInfo]:
+        """Get list of available text encoder models."""
+        return self._text_encoders
 
     @property
     def upscalers(self) -> list[ModelInfo]:
@@ -132,9 +144,10 @@ class ModelManager:
                 print(f"Error in models changed callback: {e}")
 
     # Directories to scan for each model type
-    CHECKPOINT_DIRS = {"checkpoints", "checkpoint", "stable-diffusion", "sd", "sdxl"}
+    CHECKPOINT_DIRS = {"checkpoints", "checkpoint", "stable-diffusion", "sd", "sdxl"} | ZIMAGE_DIRS
     VAE_DIRS = {"vae", "vaes"}
-    CLIP_DIRS = {"clip", "text_encoder", "text_encoders"}
+    CLIP_DIRS = {"clip"}
+    TEXT_ENCODER_DIRS = {"text_encoder", "text_encoders"}
     UPSCALE_DIRS = {"upscale", "upscalers", "esrgan", "realesrgan"}
     LORA_DIRS = {"loras", "lora"}
 
@@ -151,6 +164,7 @@ class ModelManager:
         self._checkpoints.clear()
         self._vaes.clear()
         self._clips.clear()
+        self._text_encoders.clear()
         self._upscalers.clear()
         self._loras.clear()
 
@@ -169,6 +183,9 @@ class ModelManager:
         # Scan CLIP directories
         self._scan_clip_models(models_path, progress_callback)
 
+        # Scan text encoder directories
+        self._scan_text_encoder_models(models_path, progress_callback)
+
         # Scan upscale directories
         self._scan_upscale_models(models_path, progress_callback)
 
@@ -179,6 +196,7 @@ class ModelManager:
         self._checkpoints.sort(key=lambda m: m.name.lower())
         self._vaes.sort(key=lambda m: m.name.lower())
         self._clips.sort(key=lambda m: m.name.lower())
+        self._text_encoders.sort(key=lambda m: m.name.lower())
         self._upscalers.sort(key=lambda m: m.name.lower())
         self._loras.sort(key=lambda m: m.name.lower())
 
@@ -186,6 +204,7 @@ class ModelManager:
             progress_callback(
                 f"Found {len(self._checkpoints)} checkpoints, "
                 f"{len(self._vaes)} VAEs, {len(self._clips)} CLIPs, "
+                f"{len(self._text_encoders)} text encoders, "
                 f"{len(self._upscalers)} upscalers, {len(self._loras)} LoRAs"
             )
 
@@ -215,6 +234,17 @@ class ModelManager:
                 for path in subdir.rglob(f"*{ext}"):
                     model_files.append(path)
 
+            # Also scan for HF directories (containing model_index.json)
+            for path in subdir.iterdir():
+                if path.is_dir() and (path / "model_index.json").exists():
+                    model_files.append(path)
+
+        # Also check root-level directories for HF format
+        for path in models_path.iterdir():
+            if path.is_dir() and (path / "model_index.json").exists():
+                if path.name.lower() not in self.CHECKPOINT_DIRS:
+                    model_files.append(path)
+
         total = len(model_files)
         for i, path in enumerate(model_files):
             if progress_callback:
@@ -222,13 +252,16 @@ class ModelManager:
 
             try:
                 components = model_inspector.inspect(path)
-                size = path.stat().st_size
+                if path.is_dir():
+                    size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+                else:
+                    size = path.stat().st_size
 
-                # Only add if it looks like a checkpoint (has unet)
-                if components.has_unet:
+                # Only add if it looks like a checkpoint (has unet or transformer)
+                if components.has_unet or components.has_transformer:
                     model_info = ModelInfo(
                         path=path,
-                        name=path.stem,
+                        name=path.stem if path.is_file() else path.name,
                         model_type=ModelType.CHECKPOINT,
                         components=components,
                         size_bytes=size,
@@ -282,6 +315,45 @@ class ModelManager:
                         self._clips.append(model_info)
                     except Exception as e:
                         print(f"Error scanning CLIP {path}: {e}")
+
+    def _scan_text_encoder_models(self, models_path: Path, progress_callback: Optional[Callable[[str], None]] = None) -> None:
+        """Scan for text encoder models (safetensors files and HF directories) in text_encoder/ dirs."""
+        for subdir in self._get_scan_directories(models_path, self.TEXT_ENCODER_DIRS):
+            # Scan for safetensors files
+            for ext in MODEL_EXTENSIONS:
+                for path in subdir.rglob(f"*{ext}"):
+                    if progress_callback:
+                        progress_callback(f"Scanning text encoder: {path.name}")
+                    try:
+                        size = path.stat().st_size
+                        model_info = ModelInfo(
+                            path=path,
+                            name=path.stem,
+                            model_type=ModelType.TEXT_ENCODER,
+                            components=ModelComponents(),
+                            size_bytes=size,
+                        )
+                        self._text_encoders.append(model_info)
+                    except Exception as e:
+                        print(f"Error scanning text encoder {path}: {e}")
+
+            # Scan for HF directories (containing config.json)
+            for path in subdir.iterdir():
+                if path.is_dir() and (path / "config.json").exists():
+                    if progress_callback:
+                        progress_callback(f"Scanning text encoder: {path.name}")
+                    try:
+                        size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+                        model_info = ModelInfo(
+                            path=path,
+                            name=path.name,
+                            model_type=ModelType.TEXT_ENCODER,
+                            components=ModelComponents(),
+                            size_bytes=size,
+                        )
+                        self._text_encoders.append(model_info)
+                    except Exception as e:
+                        print(f"Error scanning text encoder {path}: {e}")
 
     def _scan_upscale_models(self, models_path: Path, progress_callback: Optional[Callable[[str], None]] = None) -> None:
         """Scan for upscaler models in specific directories."""
@@ -343,6 +415,10 @@ class ModelManager:
         """Select a CLIP model for loading."""
         self._loaded.clip = model
 
+    def select_text_encoder(self, model: Optional[ModelInfo]) -> None:
+        """Select a text encoder model for loading."""
+        self._loaded.text_encoder = model
+
     def get_checkpoint_by_name(self, name: str) -> Optional[ModelInfo]:
         """Find a checkpoint by name."""
         for model in self._checkpoints:
@@ -378,9 +454,14 @@ class ModelManager:
                 return model
         return None
 
+    def set_turbo_override(self, is_turbo: Optional[bool]) -> None:
+        """Set the turbo toggle override from UI."""
+        self._turbo_override = is_turbo
+
     def clear_selection(self) -> None:
         """Clear all model selections."""
         self._loaded.clear()
+        self._turbo_override = None
 
     def get_load_config(self) -> dict:
         """
@@ -393,6 +474,20 @@ class ModelManager:
         if self._loaded.checkpoint:
             config["checkpoint_path"] = str(self._loaded.checkpoint.path)
             config["model_type"] = self._loaded.checkpoint.components.model_type
+
+            # Z-Image specific config
+            if self._loaded.checkpoint.components.is_zimage:
+                config["is_hf_directory"] = self._loaded.checkpoint.components.is_hf_directory
+                # Auto-detect turbo from filename, allow UI override
+                if self._turbo_override is not None:
+                    config["is_turbo"] = self._turbo_override
+                else:
+                    name_lower = self._loaded.checkpoint.name.lower()
+                    config["is_turbo"] = "turbo" in name_lower
+
+                # Use user-selected text encoder if checkpoint doesn't have embedded
+                if not self._loaded.checkpoint.has_embedded_clip and self._loaded.text_encoder:
+                    config["text_encoder_path"] = str(self._loaded.text_encoder.path)
 
             # Only include separate VAE if checkpoint doesn't have embedded
             # or if user explicitly selected a different VAE
@@ -410,6 +505,13 @@ class ModelManager:
                 config["clip_path"] = str(self._loaded.clip.path)
 
         return config
+
+    def get_text_encoder_by_name(self, name: str) -> Optional[ModelInfo]:
+        """Find a text encoder by name."""
+        for model in self._text_encoders:
+            if model.name == name:
+                return model
+        return None
 
 
 # Global model manager instance

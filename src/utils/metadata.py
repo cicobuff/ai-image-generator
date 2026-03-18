@@ -16,6 +16,7 @@ class GenerationMetadata:
     checkpoint: str = ""
     vae: str = ""
     clip: str = ""
+    text_encoder: str = ""
 
     # Generation parameters
     prompt: str = ""

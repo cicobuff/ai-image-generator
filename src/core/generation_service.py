@@ -13,7 +13,7 @@ from gi.repository import GLib
 
 from src.core.config import config_manager
 from src.core.model_manager import model_manager
-from src.core.gpu_manager import gpu_manager
+
 from src.backends.diffusers_backend import diffusers_backend, GenerationParams
 from src.backends.upscale_backend import upscale_backend
 from src.backends.segmentation_backend import DetectedMask
@@ -62,6 +62,7 @@ class GenerationService:
         self._loaded_checkpoint_name: str = ""
         self._loaded_vae_name: str = ""
         self._loaded_clip_name: str = ""
+        self._loaded_text_encoder_name: str = ""
         self._loaded_model_type: str = ""
 
         # Callbacks
@@ -161,10 +162,6 @@ class GenerationService:
 
         def load_thread():
             try:
-                # Set GPUs
-                selected_gpus = config_manager.config.gpus.selected
-                diffusers_backend.set_gpus(selected_gpus)
-
                 # Load model
                 success = diffusers_backend.load_model(
                     checkpoint_path=load_config["checkpoint_path"],
@@ -175,6 +172,9 @@ class GenerationService:
                     use_compiled=use_compiled,
                     target_width=target_width,
                     target_height=target_height,
+                    is_turbo=load_config.get("is_turbo", False),
+                    text_encoder_path=load_config.get("text_encoder_path"),
+                    is_hf_directory=load_config.get("is_hf_directory", False),
                 )
 
                 if success:
@@ -189,6 +189,10 @@ class GenerationService:
                         self._loaded_clip_name = Path(load_config["clip_path"]).stem
                     else:
                         self._loaded_clip_name = ""
+                    if load_config.get("text_encoder_path"):
+                        self._loaded_text_encoder_name = Path(load_config["text_encoder_path"]).stem
+                    else:
+                        self._loaded_text_encoder_name = ""
 
                     self._notify_progress("Model loaded and ready", 1.0)
                 else:
@@ -1207,6 +1211,7 @@ class GenerationService:
             checkpoint=self._loaded_checkpoint_name,
             vae=self._loaded_vae_name,
             clip=self._loaded_clip_name,
+            text_encoder=self._loaded_text_encoder_name,
             prompt=params.prompt,
             negative_prompt=params.negative_prompt,
             width=image.width,  # Final image width (may be upscaled)
